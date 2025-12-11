@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+if [ "$1" = "dm" ]; then
+    ./gradlew :sample:run
+fi

@@ -1,0 +1,150 @@
+diff --git a/TODO.org b/TODO.org
+index cd0d7a0..9cc1583 100644
+--- a/TODO.org
++++ b/TODO.org
+@@ -13,4 +13,6 @@
+ 
+ * TODO написать тесты на работу с nullable аргументами
+ 
++* TODO написать тесты на queue
++
+ * TODO потестить, что работает кейс, когда в start передаётся аргумент равный =null=
+diff --git a/sample/src/main/kotlin/ru/kode/newremothing/Main.kt b/sample/src/main/kotlin/ru/kode/newremothing/Main.kt
+index 87427bd..72faff5 100644
+--- a/sample/src/main/kotlin/ru/kode/newremothing/Main.kt
++++ b/sample/src/main/kotlin/ru/kode/newremothing/Main.kt
+@@ -3,6 +3,7 @@ package ru.kode.newremothing
+ import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CopyOnWriteArrayList
+ import java.util.concurrent.CountDownLatch
++import java.util.concurrent.ConcurrentLinkedDeque
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.CoroutineDispatcher
+ import kotlinx.coroutines.CoroutineExceptionHandler
+@@ -51,10 +52,11 @@ class TaskHandle<A, R>(
+     val name: String,
+     val id: Uuid,
+     internal val scope: CoroutineScope,
++    internal val queue: DefaultTaskQueue<A>,
+     internal val body: suspend (A) -> R,
+ ) {
+     companion object {
+-        val NIL = TaskHandle<Any?, Any?>("", Uuid.NIL, CoroutineScope(EmptyCoroutineContext)) {}
++        val NIL = TaskHandle<Any?, Any?>("", Uuid.NIL, CoroutineScope(EmptyCoroutineContext), DefaultTaskQueue<Any?>()) {}
+     }
+ 
+     override fun toString(): String {
+@@ -104,9 +106,42 @@ data class TaskState(
+ @OptIn(ExperimentalUuidApi::class)
+ interface TaskStateChangeListener {
+     suspend fun onTaskStateChanged(state: TaskState)
++    suspend fun onTaskQueueEntryScheduled(taskId: Uuid, startHandle: StartHandle, argument: Any)
++
+     fun onTaskCancelled(taskId: Uuid, startId: Uuid)
+ }
+ 
++interface Queue<A> {
++    fun addFirst(argument: A): Queue<A>
++    fun addLast(argument: A): Queue<A>
++
++    val isEmpty: Boolean
++
++    // TODO add start() here, so that user can manually start queued tasks without first starting task
++    // by normal means (which would trigger queue scheduling on completion). I.e. something like this should work:
++    // (no scheduler.start(handde) prior to this at all)
++    // scheduler.queue(handle).addLast(11)
++    // scheduler.queue(handle).addLast(12)
++    // scheduler.queue(handle).addLast(13)
++    // scheduler.queue(handle).start() OR scheduler.startQueued(handle)
++}
++
++class DefaultTaskQueue<A> : Queue<A> {
++    internal val impl = ConcurrentLinkedDeque<A>()
++
++    override fun addFirst(argument: A): Queue<A> {
++        impl.addFirst(argument)
++        return this
++    }
++
++    override fun addLast(argument: A): Queue<A> {
++        impl.addLast(argument)
++        return this
++    }
++
++    override val isEmpty: Boolean get() = impl.isEmpty()
++}
++
+ @OptIn(ExperimentalUuidApi::class)
+ class Scheduler(
+     val scope: CoroutineScope,
+@@ -149,11 +184,16 @@ class Scheduler(
+         return TaskHandle(
+             name = name,
+             id = taskId,
+-            body = body,
+             scope = scope,
++            queue = DefaultTaskQueue(),
++            body = body,
+         )
+     }
+ 
++    fun <A> queue(handle: TaskHandle<A, *>): Queue<A> {
++        return handle.queue
++    }
++
+     fun <A> start(handle: TaskHandle<A, *>, argument: A): StartHandle {
+         return startInternal(handle, argument, cancelPrevious = false)
+     }
+@@ -191,6 +231,12 @@ class Scheduler(
+                     taskState[startId] = state
+                     stateChangeListeners.forEach { it.onTaskStateChanged(state) }
+                 }
++            } finally {
++                val nextQueuedArgument = handle.queue.impl.pollFirst()
++                if (nextQueuedArgument != null) {
++                    val nextQueuedStartHandle = startInternal(handle, nextQueuedArgument, cancelPrevious)
++                    stateChangeListeners.forEach { it.onTaskQueueEntryScheduled(handle.id, nextQueuedStartHandle, nextQueuedArgument) }
++                }
+             }
+         }
+         job.invokeOnCompletion { cause ->
+@@ -290,6 +336,10 @@ fun testBasicStart(scheduler: Scheduler) {
+             }
+         }
+ 
++        override suspend fun onTaskQueueEntryScheduled(taskId: Uuid, startHandle: StartHandle, argument: Any) {
++            println("task queue entry scheduled: startId = ${startHandle.id}, taskId = $taskId, argument = $argument")
++        }
++
+         // TODO mention in docs that implementation should be fast: copy from invokeOnCompletion docs
+         override fun onTaskCancelled(taskId: Uuid, startId: Uuid) {
+             println("task is cancelled: startId = $startId, taskId = $taskId")
+@@ -325,6 +375,11 @@ fun testStartLatest(scheduler: Scheduler) {
+             }
+         }
+ 
++        override suspend fun onTaskQueueEntryScheduled(taskId: Uuid, startHandle: StartHandle, argument: Any) {
++            println("task queue entry scheduled: startId = ${startHandle.id}, taskId = $taskId, argument = $argument")
++        }
++
++
+         // TODO mention in docs that implementation should be fast: copy from invokeOnCompletion docs
+         override fun onTaskCancelled(taskId: Uuid, startId: Uuid) {
+             println("task is cancelled: startId = $startId, taskId = $taskId")
+@@ -343,7 +398,6 @@ fun testStartLatest(scheduler: Scheduler) {
+         scheduler.startLatest(queryHandle, "final-query")
+     }
+     latch.await()
+-
+ }
+ 
+ @OptIn(ExperimentalUuidApi::class)
+@@ -353,7 +407,7 @@ fun main() {
+     val scheduler = Scheduler(scope = schedulerScope)
+ 
+     println("ready to start")
+-    val mode = "startlatest"
++    val mode = "basic"
+     if (mode == "basic") {
+         testBasicStart(scheduler)
+     } else {
