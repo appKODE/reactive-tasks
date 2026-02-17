@@ -43,6 +43,18 @@ scheduler.startLatest(searchTaskHandle, "Moscow")
 scheduler.startLatest(searchTaskHandle, "Saint-Petersburg")
 
 //
+// Start tasks as suspend-functions in some scope
+//
+val mainScope = CoroutineScope(Dispatchers.Main)
+mainScope.launch {
+    val resultState = scheduler.startSuspended(fetchTaskHandle, "sample-id-003")
+    if (resultState.result == 3) {
+        scheduler.startSuspended(fetchTaskHandle, "sample-id-004")
+        println("all fetches done!")
+    }
+}
+
+//
 // Add listener to observe changes
 //
 scheduler.addTaskStateChangeListener(object : TaskStateChangeListener {
