@@ -46,8 +46,8 @@ fun testBasicStart(scheduler: Scheduler) {
         }
 
         // TODO mention in docs that implementation should be fast: copy from invokeOnCompletion docs
-        override fun onJobCancelled(taskId: Uuid, startId: Uuid) {
-            println("task is cancelled: startId = $startId, taskId = $taskId")
+        override fun onJobCancelled(taskId: Uuid, jobId: Uuid) {
+            println("task is cancelled: jobId = $jobId, taskId = $taskId")
         }
     })
 
@@ -88,8 +88,8 @@ fun testStartLatest(scheduler: Scheduler) {
         }
 
         // TODO mention in docs that implementation should be fast: copy from invokeOnCompletion docs
-        override fun onJobCancelled(taskId: Uuid, startId: Uuid) {
-            println("task is cancelled: startId = $startId, taskId = $taskId")
+        override fun onJobCancelled(taskId: Uuid, jobId: Uuid) {
+            println("task is cancelled: jobId = $jobId, taskId = $taskId")
         }
     })
 
@@ -135,7 +135,6 @@ fun main() {
     val mainScope = CoroutineScope(Dispatchers.IO)
     val scheduler = Scheduler(scope = schedulerScope)
 
-    println("ready to start")
     val mode = "flow"
     if (mode == "basic") {
         testBasicStart(scheduler)
@@ -144,100 +143,4 @@ fun main() {
     } else {
         testStartLatest(scheduler)
     }
-
-    // val fetchJob = scheduler.observeAsState(fetchHandle)
-    //     .onSubscription {
-    //         scheduler.start(fetchHandle, "user-id-100")
-    //         scheduler.start(fetchHandle, "user-id-2200")
-    //         scheduler.start(fetchHandle, "user-id-500")
-    //         scheduler.start(fetchHandle, "user-id-700")
-    //         scheduler.start(fetchHandle, "user-id-800")
-    //         scheduler.start(fetchHandle, "user-id-900")
-    //     }
-    //     .onEach { state ->
-    //         println(state.toString())
-    //     }
-    //     .launchIn(mainScope)
-
-    // val taskHandle1 = scheduler.registerSerialTask { id: String ->
-    //     repositoryFetchUser(id)
-    // }
-
-    // val taskHandle2 = scheduler.registerParallelTask { id: String ->
-    //     repositoryFetchUser(id)
-    // }
-
-    // val taskHandle3 = scheduler.registerSingleTask { id: String ->
-    //     repositoryFetchUser(id)
-    // }
-
-    // scheduler.observe(taskHandle1)
-    //     .onEach { state ->
-    //     }
-    //     .launchIn(scope)
-
-    // val startHandle1 = scheduler.start(taskHandle2, "user-id-100")
-    // val startHandle2 = scheduler.start(taskHandle2, "user-id-200")
-    // val startHandle3 = scheduler.start(taskHandle3, "user-id-300")
-    // scheduler.cancel(taskHandle1) // cancels all instances of running task
-    // scheduler.cancel(startHandle1) // cancels a particular instance of task
-
-    // scheduler.start(taskHandle2, "user-id-100")
-    // scheduler.start(taskHandle2, "user-id-200")
-    // scheduler.start(taskHandle2, "user-id-300")
-    // scheduler.cancel(taskHandle2)
-
-    // //
-    // // Usecase:  with previous arguments
-    // //
-    // scheduler.restart(startHandle1)
-
-    // //
-    // // Usecase: restart with new argument... what does this mean? cancel if some instance is running?
-    // //
-    // scheduler.startLatest(taskHandle1, "user-id-200")
-
-    // scheduler.startQueued(startHandle2, "user-id-200", condition = { result -> result.error == null })
-    // // OR
-    // val queuedHandle1 = scheduler.queue(taskHandle2).addFirst("user-id-200")
-    // val queuedHandle2 = scheduler.queue(taskHandle2).addLast("user-id-200")
-    // // (queue starts to be used right after all running tasks are finished (they may be parallel), queued handles will lack Jobs)
-
-    // // any other schemes can be done using scheduler.cancelAndJoin(), scheduler.startSuspended()
-
-    // //
-    // // Usecase: start suspended
-    // //
-    // {
-    //     // TODO
-    // }
-
-    // // Usecase: distinguish between starts when subscribing to state.
-    // // 1. Screen1 starts TASK-X, subscribes, task finishes
-    // // 2. Screen2 starts TASK-X, subscribes
-    // //
-    // // Screen2 will receive result which was received on step1, and this is unwanted, Screen2 wants to
-    // // only receive results since it started TASK-X. Doing skip(1) will not work, because Screen2 still wants
-    // // to have state-like behaviour of subscription
-    // // Current suggestion: allow to additionally mark task start instances with some code/id, then it can be
-    // // used when subscribing to filter only correspondingly marked results (filtering should be left to the user,
-    // // not contained in lib, to avoid method bloat)
-    // {
-    //     // TODO
-    // }
-
-    // //
-    // // Restart tasks
-    // //
-    // {
-    //     // TODO
-    // }
-
-    // //
-    // // Launch when subscribed to by [count] subscribers???
-    // //
-    // {
-    //     // TODO
-    // }
-
 }
