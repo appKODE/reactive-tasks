@@ -86,12 +86,16 @@ runBlocking {
 //
 scheduler.cancel(searchTaskHandle)
 // or
-scheduler.cancelAndJoin(commitChangesHandle)
+runBlocking {
+    scheduler.cancelAndJoin(searchTaskHandle)
+}
 
 // 
 // Cancel a specific started job 
 //
 scheduler.cancel(jobHandle2)
 // or
-scheduler.cancelAndJoin(jobHandle1)
+runBlocking {
+    scheduler.cancelAndJoin(jobHandle2)
+}
 ```
