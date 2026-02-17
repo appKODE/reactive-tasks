@@ -11,7 +11,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 val scheduler = Scheduler(scope = CoroutineScope(Dispatchers.IO))
 
 //
-// Register tasks
+// register tasks
 //
 val fetchTaskHandle = scheduler.registerTask("fetch", body = { sampleId: String ->
     val response = networkApi.fetchSampleData(sampleId) // suspending call
@@ -80,4 +80,18 @@ runBlocking {
             println("Received state $it")
         }
 }
+
+//
+// Cancel all jobs of a certain task
+//
+scheduler.cancel(searchTaskHandle)
+// or
+scheduler.cancelAndJoin(commitChangesHandle)
+
+// 
+// Cancel a specific started job 
+//
+scheduler.cancel(jobHandle2)
+// or
+scheduler.cancelAndJoin(jobHandle1)
 ```
