@@ -11,7 +11,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 val scheduler = Scheduler(scope = CoroutineScope(Dispatchers.IO))
 
 //
-// register tasks
+// Register tasks
 //
 val fetchTaskHandle = scheduler.registerTask("fetch", body = { sampleId: String ->
     val response = networkApi.fetchSampleData(sampleId) // suspending call
