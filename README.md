@@ -2,6 +2,14 @@
 
 A library for scheduling, executing and observing repeateble reactive tasks.
 
+# Installation
+
+Kotlin Multiplatform: JVM, Android, iOS (`iosX64`, `iosArm64`, `iosSimulatorArm64`).
+
+```kotlin
+implementation("ru.kode:reactive-tasks:1.0.0")
+```
+
 # How to use
 
 ```kotlin
