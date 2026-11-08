@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,35 +6,25 @@ plugins {
     alias(libs.plugins.vanniktech.mavenPublish)
 }
 
-group = "ru.kode.reactivetasks"
-version = "1.0.0"
+group = providers.gradleProperty("pomGroupId").get()
+version = providers.gradleProperty("versionName").get()
 
 kotlin {
     jvm()
-    androidLibrary {
+    android {
         namespace = "ru.kode.reactivetasks"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
-        // withJava() // enable java compilation support
+        withHostTest {}
 
-        withHostTestBuilder {}.configure {}
-        // withDeviceTestBuilder {
-        //     sourceSetTreeName = "test"
-        // }
-
-        compilations.configureEach {
-            compilerOptions.configure {
-                jvmTarget.set(
-                    JvmTarget.JVM_17
-                )
-            }
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
         }
     }
     iosX64()
     iosArm64()
     iosSimulatorArm64()
-    // linuxX64()
 
     sourceSets {
         commonMain.dependencies {
@@ -44,40 +33,57 @@ kotlin {
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlin.coroutines.test)
+        }
+
+        iosMain.dependencies {
+            implementation(libs.kotlinx.atomicfu)
         }
     }
 }
 
 mavenPublishing {
-    publishToMavenCentral()
+    coordinates(artifactId = "reactive-tasks")
 
+    publishToMavenCentral()
     signAllPublications()
 
-    coordinates(group.toString(), "library", version.toString())
-
     pom {
-        name = "My library"
-        description = "A library."
-        inceptionYear = "2024"
-        url = "https://github.com/appkode/my-library"
+        val pomName: String by project
+        val pomDescription: String by project
+        val pomUrl: String by project
+        val pomScmUrl: String by project
+        val pomScmConnection: String by project
+        val pomScmDevConnection: String by project
+        val pomLicenseName: String by project
+        val pomLicenseUrl: String by project
+        val pomLicenseDist: String by project
+        val pomDeveloperId: String by project
+        val pomDeveloperName: String by project
+
+        name.set(pomName)
+        description.set(pomDescription)
+        url.set(pomUrl)
+
+        scm {
+            url.set(pomScmUrl)
+            connection.set(pomScmConnection)
+            developerConnection.set(pomScmDevConnection)
+        }
+
         licenses {
             license {
-                name = "XXX"
-                url = "YYY"
-                distribution = "ZZZ"
+                name.set(pomLicenseName)
+                url.set(pomLicenseUrl)
+                distribution.set(pomLicenseDist)
             }
         }
+
         developers {
             developer {
-                id = "XXX"
-                name = "YYY"
-                url = "ZZZ"
+                id.set(pomDeveloperId)
+                name.set(pomDeveloperName)
             }
-        }
-        scm {
-            url = "XXX"
-            connection = "YYY"
-            developerConnection = "ZZZ"
         }
     }
 }

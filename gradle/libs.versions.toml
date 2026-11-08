@@ -1,14 +1,17 @@
 [versions]
-agp = "8.13.0"
-kotlin = "2.2.20"
+agp = "9.0.1"
+kotlin = "2.3.20"
 android-minSdk = "24"
 android-compileSdk = "36"
-vanniktechMavenPublish = "0.34.0"
+vanniktechMavenPublish = "0.37.0"
 coroutines = "1.10.2"
+atomicfu = "0.29.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlin-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "atomicfu" }
 
 [plugins]
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
