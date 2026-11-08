@@ -33,6 +33,7 @@ kotlin {
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlin.coroutines.test)
         }
 
         iosMain.dependencies {
