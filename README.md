@@ -7,7 +7,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 Kotlin Multiplatform: JVM, Android, iOS (`iosX64`, `iosArm64`, `iosSimulatorArm64`).
 
 ```kotlin
-implementation("ru.kode:reactive-tasks:1.0.0")
+implementation("ru.kode:reactive-tasks:1.1.0")
 ```
 
 # How to use
@@ -83,11 +83,19 @@ scheduler.addTaskStateChangeListener(object : TaskStateChangeListener {
     }
 }
 
-// 
-// There's also a simple utility which wraps listener
-// into Flow. It is fairly simple implementation, if you need
-// something more involved, check how observeStateChanges is implemented, 
-// use it as a reference
+//
+// Or observe one task as a Flow. Read a typed result with state.resultOf(handle): R?
+//
+val searchStates = scheduler.jobStates(searchTaskHandle)      // replays a running job's state, never completes on cancel
+val lastResult = scheduler.successResults(searchTaskHandle, replayFinished = true) // also replays the last finished result
+val searchResults = scheduler.successResults(searchTaskHandle) // Flow<R>, no casts
+val searchErrors = scheduler.errors(searchTaskHandle)          // Flow<Throwable>
+val fetchRunning = scheduler.isRunning(fetchTaskHandle)
+
+//
+// observeStateChanges completes on the first cancelled job of the task (pass completeOnJobCancel = false
+// to keep observing). It is fairly simple implementation, if you need something more involved,
+// check how it is implemented, use it as a reference
 //
 val taskStateChanges = scheduler.observeStateChanges(searchTaskHandle)
 runBlocking {
@@ -131,59 +139,42 @@ reactive-tasks drops the `ReactiveModel` base class and `kotlin-result`, and add
 // before
 implementation("ru.kode:remo:1.2.0") // or ru.kode:remo:9.0.1, ru.kode.android:remo:9.1.0
 // after
-implementation("ru.kode:reactive-tasks:1.0.0")
+implementation("ru.kode:reactive-tasks:1.1.0")
 ```
+
+remo 1.2.0 and 9.x differ only in how a model gets its scope; tasks and `JobFlow` are the same.
+Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 
 ## API map
 
-| remo | reactive-tasks |
-|---|---|
-| `class UserModel : ReactiveModel()` | `class UserModel(scheduler: Scheduler)`, no base class |
-| `model.start(parentScope)` (1.x) / constructor scope (9.x), `Job.cancel()` to stop | `Scheduler(scope)`, cancel `scope` to stop |
-| `scope.launch { }` inside the model | `scheduler.scope.launch { }` |
-| `uncaughtExceptions: Flow<Throwable>` | `Scheduler(onUncaughtException = { taskId, name, e -> })` |
-| `val fetch = task { id: String -> api.fetch(id) }` | `val fetch = scheduler.registerTask("fetch") { id: String -> api.fetch(id) }` |
-| `task { -> api.fetch() }` | `registerTask("fetch") { _: Unit -> api.fetch() }`, `start(fetch, Unit)` |
-| `task { a: A, b: B -> }` (2–3 params) | one argument: `registerTask("t") { (a, b): Pair<A, B> -> }` or a data class |
-| `fetch.start(id)`: `Job` | `scheduler.start(fetch, id)`: `JobHandle` |
-| `job.cancel()` | `scheduler.cancel(jobHandle)` / `scheduler.cancel(fetch)` (all jobs of the task) |
-| `QueueingStrategy.Disallow` (default: fails if a job runs) | no equivalent, `start` runs jobs in parallel |
-| `QueueingStrategy.SkipNew` | check `isRunning(fetch)` (below) before `start` |
-| — | `startLatest(fetch, id)`: cancels running jobs of the task (search-as-you-type) |
-| — | `startSuspended(fetch, id)`: suspends until done, returns `JobState` |
-| `WatchContext()` + `executeInModelScope { }` | `registerTask` + `start` |
-| one `WatchContext` shared by several jobs (one loader) | several tasks, `merge(jobStates(a), jobStates(b))`, or one task with a sealed argument |
-| `fetch.jobFlow.state`: `Idle` / `Running` | `jobStates(fetch).map { it.runState == RunState.Running }` |
-| `fetch.jobFlow.successResults()` | `jobStates(fetch).filter { it.runState == RunState.FinishedSuccess }.map { it.result as R }` |
-| `fetch.jobFlow.errors()` | `jobStates(fetch).filter { it.runState == RunState.FinishedError }.map { it.error!! }` |
-| `fetch.jobFlow.results()`: `Result<R, Throwable>` | `JobState` with `runState`, `result`, `error` |
-| `results(replayLast = true)` | no replay: `shareIn(scope, started, replay = 1)` or `stateIn`; last states are in `scheduler.taskJobState` |
-| `StartScheduled.Lazily(...)` | subscribe first: `shareIn(...).onSubscription { scheduler.start(fetch, id) }` |
-| `mapErrors {}` / `WatchContext(errorMapper = …)` | map in the flow, or catch inside the task body |
-
-## Observing one task
-
-`Scheduler.observeStateChanges(handle)` (1.0.0) emits states of **all** tasks of the scheduler and closes on the
-first cancelled job of any task — `startLatest` cancels jobs, so the flow would end. Until it is fixed, observe with
-this helper, which behaves like remo's `jobFlow`:
-
-```kotlin
-@OptIn(ExperimentalUuidApi::class)
-fun Scheduler.jobStates(task: TaskHandle<*, *>): Flow<JobState> = callbackFlow {
-  val listener = object : TaskStateChangeListener {
-    override suspend fun onJobStateChanged(state: JobState) {
-      if (state.taskId == task.id) send(state)
-    }
-
-    override fun onJobCancelled(taskId: Uuid, jobId: Uuid) = Unit
-  }
-  addTaskStateChangeListener(listener)
-  awaitClose { removeTaskStateChangeListener(listener) }
-}
-
-fun Scheduler.isRunning(task: TaskHandle<*, *>): Boolean =
-  taskJobState.values.any { it.taskId == task.id && it.runState == RunState.Running }
-```
+| remo 1.2.0 | remo 9.0.1 | reactive-tasks 1.1.0 |
+|---|---|---|
+| `class M : ReactiveModel(dispatcher)` | `class M(scope) : ReactiveModel(scope)` | `class M(scheduler: Scheduler)`, no base class |
+| `model.start(parentScope)`, `Job.cancel()` to stop | constructor `scope`, cancel it to stop | `Scheduler(scope)`, cancel `scope` to stop |
+| `onPostStart()` | `init {}` (`onPostStart` deprecated) | `init {}` |
+| `scope.launch {}` inside the model | same | `scheduler.scope.launch {}` |
+| `uncaughtExceptions: Flow<Throwable>` | same | `Scheduler(onUncaughtException = { taskId, taskName, e -> })` |
+| `ReactiveModel(errorMapper = …)`, `task(errorMapper = …)`, `mapErrors {}` | same | map in the flow: `errors(fetch).map { … }`, or catch inside the task body |
+| `val fetch = task { id: String -> api.fetch(id) }` | same | `val fetch = scheduler.registerTask("fetch") { id: String -> api.fetch(id) }` |
+| `task { -> api.fetch() }` (`Task0`) | same | `registerTask("fetch") { _: Unit -> api.fetch() }`, `start(fetch, Unit)` |
+| `task { a: A, b: B -> }` (`Task2` / `Task3`) | same | one data class argument: `registerTask("t") { (a, b): Args -> }` |
+| `taskIn(watchContext) { }`, `WatchContext.executeInModelScope { }` | same | `registerTask` + `start` |
+| one `WatchContext` shared by several tasks | same | `merge(jobStates(a), jobStates(b))`, or one task with a sealed argument |
+| `fetch.start(id)`: `Job` | same | `scheduler.start(fetch, id)`: `JobHandle` |
+| `job.cancel()` | same | `scheduler.cancel(jobHandle)`, `scheduler.cancel(fetch)` (all jobs of the task) |
+| `start(id, queueingStrategy = Disallow)` (default, throws if a job runs) | same | no equivalent, `start` runs jobs in parallel |
+| `start(id, queueingStrategy = SkipNew)` | same | `if (!scheduler.isRunning(fetch)) scheduler.start(fetch, id)` |
+| restart a running job with a new argument | same | `scheduler.startLatest(fetch, id)`: cancels running jobs of the task |
+| re-run with the last argument | same | `scheduler.restart(fetch)` |
+| `start(id, StartScheduled.Lazily())` | same | `flow { emit(scheduler.startSuspended(fetch, id)) }`, or `shareIn(…).onSubscription { scheduler.start(fetch, id) }` |
+| — | — | `startSuspended(fetch, id)`: suspends until done, returns `JobState` (`state.resultOf(fetch)`: `R?`) |
+| `fetch.jobFlow` | same | `scheduler.jobStates(fetch)`: `Flow<JobState>` |
+| `fetch.jobFlow.state`: `Idle` / `Running` | same | `jobStates(fetch).map { it.runState == RunState.Running }` (a running job is replayed on subscribe) |
+| `fetch.jobFlow.successResults()` | same | `scheduler.successResults(fetch)`: `Flow<R>` |
+| `fetch.jobFlow.errors()` | same | `scheduler.errors(fetch)`: `Flow<Throwable>` |
+| `fetch.jobFlow.results()`: `Result<R, Throwable>` | same | `jobStates(fetch)`: `JobState` with `runState`, `error`, `resultOf(fetch)`: `R?` |
+| `results(replayLast = true)`, `successResults(replayLast = true)` | same | `jobStates(fetch, replayFinished = true)`, `successResults(fetch, replayFinished = true)` |
+| `mapSuccessResults {}` | same | `successResults(fetch).map {}` |
 
 ## Example
 
@@ -198,9 +189,7 @@ model.fetch.start(Sort.Ascending)
 // reactive-tasks
 class UserListModel(private val scheduler: Scheduler) {
   val fetch = scheduler.registerTask("fetch") { sort: Sort -> api.fetch(sort) }
-  val users: Flow<List<User>> = scheduler.jobStates(fetch)
-    .filter { it.runState == RunState.FinishedSuccess }
-    .map { it.result as List<User> }
+  val users: Flow<List<User>> = scheduler.successResults(fetch)
   fun fetch(sort: Sort) = scheduler.start(fetch, sort)
 }
 ```
