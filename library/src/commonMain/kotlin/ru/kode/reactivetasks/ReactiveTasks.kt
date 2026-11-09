@@ -13,6 +13,9 @@ import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.EmptyCoroutineContext
@@ -91,7 +94,7 @@ enum class RunState {
 }
 
 /**
- * A state of a job
+ * A state of a job. Use [resultOf] to read [result] typed by the task's result type
  */
 @OptIn(ExperimentalUuidApi::class)
 data class JobState(
@@ -185,8 +188,8 @@ class Scheduler(
      * (which is passed to the [registerTask]), because exceptions inside the "body" are caught
      * and stored in the [JobState#error] field
      */
-    val onUncaughtException: (taskId: Uuid, taskName: String, error: Throwable) -> Unit = { name, id, e ->
-        println("warning: uncaught exception from task \"$name[$id]\"")
+    val onUncaughtException: (taskId: Uuid, taskName: String, error: Throwable) -> Unit = { taskId, taskName, e ->
+        println(uncaughtExceptionMessage(taskId, taskName))
         e.printStackTrace()
     }
 ) {
@@ -203,6 +206,16 @@ class Scheduler(
      * A map of jobId to task job states
      */
     val taskJobState: Map<Uuid, JobState> = _taskJobState
+
+    /**
+     * A map of taskId to the most recent state of a still running job of that task
+     */
+    internal val runningTaskState: MutableMap<Uuid, JobState> = createConcurrentMutableMap()
+
+    /**
+     * A map of taskId to the state of the most recently finished (success or error) job of that task
+     */
+    internal val finishedTaskState: MutableMap<Uuid, JobState> = createConcurrentMutableMap()
 
     private val stateChangeListeners: MutableList<TaskStateChangeListener> = createConcurrentMutableList()
 
@@ -322,25 +335,42 @@ class Scheduler(
     }
 
     private suspend fun <A, R> executeWrappedBody(handle: TaskHandle<A, R>, jobId: Uuid, argument: A, tag: Any?): JobState {
-        val state = JobState(jobId = jobId, taskId = handle.id, argument = argument, tag = tag, runState = RunState.Running)
-        _taskJobState[jobId] = state
-        stateChangeListeners.forEach { it.onJobStateChanged(state) }
-        try {
-            val result = handle.body(argument)
-            val state = JobState(jobId = jobId, taskId = handle.id, argument = argument, tag = tag, runState = RunState.FinishedSuccess, result = result)
+        suspend fun publish(state: JobState): JobState {
             _taskJobState[jobId] = state
+            if (state.runState == RunState.Running) {
+                runningTaskState[handle.id] = state
+            } else {
+                finishedTaskState[handle.id] = state
+                forgetRunning(handle.id, jobId)
+            }
             stateChangeListeners.forEach { it.onJobStateChanged(state) }
             return state
-        } catch (e: Throwable) {
-            if (e is CancellationException) {
-                throw e
-            } else {
-                val state = JobState(jobId = jobId, taskId = handle.id, argument = argument, tag = tag, runState = RunState.FinishedError, error = e)
-                _taskJobState[jobId] = state
-                stateChangeListeners.forEach { it.onJobStateChanged(state) }
-                return state
-            }
         }
+        val running = JobState(jobId = jobId, taskId = handle.id, argument = argument, tag = tag, runState = RunState.Running)
+        try {
+            publish(running)
+            return try {
+                publish(running.copy(runState = RunState.FinishedSuccess, result = handle.body(argument)))
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                publish(running.copy(runState = RunState.FinishedError, error = e))
+            }
+        } catch (e: CancellationException) {
+            forgetRunning(handle.id, jobId)
+            throw e
+        }
+    }
+
+    private fun forgetRunning(taskId: Uuid, jobId: Uuid) {
+        if (runningTaskState[taskId]?.jobId == jobId) runningTaskState.remove(taskId)
+    }
+
+    /**
+     * Returns true if a job started with [start], [startLatest] or [restart] for [handle] is still active.
+     * Jobs started with [startSuspended] are not counted.
+     */
+    fun isRunning(handle: TaskHandle<*, *>): Boolean {
+        return handle.scope.coroutineContext.job.children.any()
     }
 
     /**
@@ -406,9 +436,14 @@ class Scheduler(
     }
 }
 
+@OptIn(ExperimentalUuidApi::class)
+internal fun uncaughtExceptionMessage(taskId: Uuid, taskName: String): String {
+    return "warning: uncaught exception from task \"$taskName[$taskId]\""
+}
+
 /**
  * A simple converter from callback-based observation (using [TaskStateChangeListener]) to reactive-based
- * observation using [Flow].
+ * observation using [Flow]. Emits states of jobs of the task represented by [handle] only.
  *
  * If you wish to do some action (for example starting a task with [Scheduler#start]) only after this flow
  * subscription is established, you can use some combination of "shareIn and/or replay and/or custom implementation
@@ -420,20 +455,90 @@ class Scheduler(
  *
  * Note that if anything more complex or specific is required, you can always implement the functionality you
  * need in a similar fashion.
+ *
+ * @param completeOnJobCancel when true (the default), the flow completes with a [CancellationException] as soon as
+ * any job of this task is cancelled. Pass false to keep observing, e.g. when the task is started with
+ * [Scheduler#startLatest] which cancels previous jobs. Jobs of other tasks never complete the flow.
+ */
+fun Scheduler.observeStateChanges(handle: TaskHandle<*, *>, completeOnJobCancel: Boolean): Flow<JobState> {
+    return stateChanges(handle, completeOnJobCancel, replay = Replay.None)
+}
+
+/**
+ * Same as `observeStateChanges(handle, completeOnJobCancel = true)`
+ */
+fun Scheduler.observeStateChanges(handle: TaskHandle<*, *>): Flow<JobState> {
+    return observeStateChanges(handle, completeOnJobCancel = true)
+}
+
+/**
+ * Emits states of jobs of the task represented by [handle], never completes on job cancellation.
+ *
+ * If the task has a running job at the moment of subscription, its [RunState.Running] state is emitted first,
+ * so a late subscriber does not miss it.
+ *
+ * @param replayFinished when true and no job is running, the state of the most recently finished (success or
+ * error) job is replayed, so a subscriber that comes after the job completed still receives its result.
+ * Cancelled jobs are never replayed.
+ */
+fun Scheduler.jobStates(handle: TaskHandle<*, *>, replayFinished: Boolean = false): Flow<JobState> {
+    return stateChanges(handle, completeOnJobCancel = false, replay = if (replayFinished) Replay.Last else Replay.Running)
+}
+
+private enum class Replay { None, Running, Last }
+
+/**
+ * Emits results of successfully finished jobs of the task represented by [handle], see [jobStates]
+ */
+fun <R> Scheduler.successResults(handle: TaskHandle<*, R>, replayFinished: Boolean = false): Flow<R> {
+    @Suppress("UNCHECKED_CAST")
+    return jobStates(handle, replayFinished).filter { it.runState == RunState.FinishedSuccess }.map { it.resultOf(handle) as R }
+}
+
+/**
+ * Returns [JobState.result] typed by the result type of [handle], the task this state belongs to.
+ * Null if the job has not finished successfully.
  */
 @OptIn(ExperimentalUuidApi::class)
-fun Scheduler.observeStateChanges(handle: TaskHandle<*, *>): Flow<JobState> {
+fun <R> JobState.resultOf(handle: TaskHandle<*, R>): R? {
+    require(taskId == handle.id) { "state of task $taskId does not belong to task ${handle.id}" }
+    @Suppress("UNCHECKED_CAST")
+    return result as R?
+}
+
+/**
+ * Emits errors of failed jobs of the task represented by [handle], see [jobStates]
+ */
+fun Scheduler.errors(handle: TaskHandle<*, *>, replayFinished: Boolean = false): Flow<Throwable> {
+    return jobStates(handle, replayFinished).mapNotNull { it.error }
+}
+
+@OptIn(ExperimentalUuidApi::class)
+private fun Scheduler.stateChanges(
+    handle: TaskHandle<*, *>,
+    completeOnJobCancel: Boolean,
+    replay: Replay,
+): Flow<JobState> {
     return callbackFlow {
         val listener = object : TaskStateChangeListener {
             override suspend fun onJobStateChanged(state: JobState) {
-                send(state)
+                if (state.taskId == handle.id) send(state)
             }
 
             override fun onJobCancelled(taskId: Uuid, jobId: Uuid) {
-                cancel(CancellationException("Task taskId=$taskId, jobId=$jobId was cancelled"))
+                if (completeOnJobCancel && taskId == handle.id) {
+                    cancel(CancellationException("Task taskId=$taskId, jobId=$jobId was cancelled"))
+                }
             }
         }
-        this@observeStateChanges.addTaskStateChangeListener(listener)
-        awaitClose { this@observeStateChanges.removeTaskStateChangeListener(listener) }
+        this@stateChanges.addTaskStateChangeListener(listener)
+        // read after subscribing: a state changing in between may arrive twice, but is never lost
+        val replayed = when (replay) {
+            Replay.None -> null
+            Replay.Running -> runningTaskState[handle.id]
+            Replay.Last -> runningTaskState[handle.id] ?: finishedTaskState[handle.id]
+        }
+        replayed?.let { listener.onJobStateChanged(it) }
+        awaitClose { this@stateChanges.removeTaskStateChangeListener(listener) }
     }
 }
