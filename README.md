@@ -164,9 +164,9 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 | `job.cancel()` | same | `scheduler.cancel(jobHandle)`, `scheduler.cancel(fetch)` (all jobs of the task) |
 | `start(id, queueingStrategy = Disallow)` (default, throws if a job runs) | same | no equivalent, `start` runs jobs in parallel |
 | `start(id, queueingStrategy = SkipNew)` | same | `if (!scheduler.isRunning(fetch)) scheduler.start(fetch, id)` |
-| restart a running job with a new argument (app-local `restartable`) | same | `scheduler.startLatest(fetch, id)`: cancels running jobs of the task |
+| restart a running job with a new argument | same | `scheduler.startLatest(fetch, id)`: cancels running jobs of the task |
 | re-run with the last argument | same | `scheduler.restart(fetch)` |
-| `start(id, StartScheduled.Lazily())`, app-local `startOnSubscribe(id)` | same | `flow { emit(scheduler.startSuspended(fetch, id)) }`, or `shareIn(…).onSubscription { scheduler.start(fetch, id) }` |
+| `start(id, StartScheduled.Lazily())` | same | `flow { emit(scheduler.startSuspended(fetch, id)) }`, or `shareIn(…).onSubscription { scheduler.start(fetch, id) }` |
 | — | — | `startSuspended(fetch, id)`: suspends until done, returns `JobState` (`state.resultOf(fetch)`: `R?`) |
 | `fetch.jobFlow` | same | `scheduler.jobStates(fetch)`: `Flow<JobState>` |
 | `fetch.jobFlow.state`: `Idle` / `Running` | same | `jobStates(fetch).map { it.runState == RunState.Running }` (a running job is replayed on subscribe) |
