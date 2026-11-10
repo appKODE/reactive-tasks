@@ -7,7 +7,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 Kotlin Multiplatform: JVM, Android, iOS (`iosX64`, `iosArm64`, `iosSimulatorArm64`).
 
 ```kotlin
-implementation("ru.kode:reactive-tasks:1.1.0")
+implementation("ru.kode:reactive-tasks:1.2.0")
 ```
 
 # How to use
@@ -90,6 +90,8 @@ val searchStates = scheduler.jobStates(searchTaskHandle)      // replays a runni
 val lastResult = scheduler.successResults(searchTaskHandle, replayFinished = true) // also replays the last finished result
 val searchResults = scheduler.successResults(searchTaskHandle) // Flow<R>, no casts
 val searchErrors = scheduler.errors(searchTaskHandle)          // Flow<Throwable>
+val searchFinished = scheduler.finishedStates(searchTaskHandle, replayLast = true) // finished states only
+val searchProgress = scheduler.runningStates(searchTaskHandle) // Flow<Boolean>, false after a cancel
 val fetchRunning = scheduler.isRunning(fetchTaskHandle)
 
 //
@@ -139,7 +141,7 @@ reactive-tasks drops the `ReactiveModel` base class and `kotlin-result`, and add
 // before
 implementation("ru.kode:remo:1.2.0") // or ru.kode:remo:9.0.1, ru.kode.android:remo:9.1.0
 // after
-implementation("ru.kode:reactive-tasks:1.1.0")
+implementation("ru.kode:reactive-tasks:1.2.0")
 ```
 
 remo 1.2.0 and 9.x differ only in how a model gets its scope; tasks and `JobFlow` are the same.
@@ -147,7 +149,7 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 
 ## API map
 
-| remo 1.2.0 | remo 9.0.1 | reactive-tasks 1.1.0 |
+| remo 1.2.0 | remo 9.0.1 | reactive-tasks 1.2.0 |
 |---|---|---|
 | `class M : ReactiveModel(dispatcher)` | `class M(scope) : ReactiveModel(scope)` | `class M(scheduler: Scheduler)`, no base class |
 | `model.start(parentScope)`, `Job.cancel()` to stop | constructor `scope`, cancel it to stop | `Scheduler(scope)`, cancel `scope` to stop |
@@ -169,11 +171,12 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 | `start(id, StartScheduled.Lazily())` | same | `flow { emit(scheduler.startSuspended(fetch, id)) }`, or `shareIn(…).onSubscription { scheduler.start(fetch, id) }` |
 | — | — | `startSuspended(fetch, id)`: suspends until done, returns `JobState` (`state.resultOf(fetch)`: `R?`) |
 | `fetch.jobFlow` | same | `scheduler.jobStates(fetch)`: `Flow<JobState>` |
-| `fetch.jobFlow.state`: `Idle` / `Running` | same | `jobStates(fetch).map { it.runState == RunState.Running }` (a running job is replayed on subscribe) |
+| `fetch.jobFlow.state`: `Idle` / `Running` (progress) | same | `scheduler.runningStates(fetch)`: `Flow<Boolean>`, current value on subscribe, `false` after a cancel |
 | `fetch.jobFlow.successResults()` | same | `scheduler.successResults(fetch)`: `Flow<R>` |
 | `fetch.jobFlow.errors()` | same | `scheduler.errors(fetch)`: `Flow<Throwable>` |
 | `fetch.jobFlow.results()`: `Result<R, Throwable>` | same | `jobStates(fetch)`: `JobState` with `runState`, `error`, `resultOf(fetch)`: `R?` |
-| `results(replayLast = true)`, `successResults(replayLast = true)` | same | `jobStates(fetch, replayFinished = true)`, `successResults(fetch, replayFinished = true)` |
+| `results(replayLast = true)` | same | `scheduler.finishedStates(fetch, replayLast = true)`: replays the last finished job even while a new one runs |
+| `successResults(replayLast = true)`, `errors(replayLast = true)` | same | `successResults(fetch, replayFinished = true)`, `errors(fetch, replayFinished = true)` |
 | `mapSuccessResults {}` | same | `successResults(fetch).map {}` |
 
 ## Example

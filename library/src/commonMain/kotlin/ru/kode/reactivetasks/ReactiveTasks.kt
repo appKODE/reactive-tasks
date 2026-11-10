@@ -10,9 +10,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -219,6 +222,11 @@ class Scheduler(
 
     private val stateChangeListeners: MutableList<TaskStateChangeListener> = createConcurrentMutableList()
 
+    /**
+     * Called with a taskId when a job of that task is launched or completes (normally or by cancellation)
+     */
+    internal val runningChangeListeners: MutableList<(taskId: Uuid) -> Unit> = createConcurrentMutableList()
+
     private fun createExceptionHandler(taskId: Uuid, taskName: String): CoroutineExceptionHandler {
         return CoroutineExceptionHandler { _, e ->
             onUncaughtException(taskId, taskName, e)
@@ -320,12 +328,15 @@ class Scheduler(
             }
             executeWrappedBody(handle, jobId, argument, tag)
         }
+        runningChangeListeners.forEach { it(handle.id) }
+        // the job is already detached from the task scope here, so isRunning does not count it
         job.invokeOnCompletion { cause ->
             if (cause is CancellationException) {
                 stateChangeListeners.forEach {
                     it.onJobCancelled(handle.id, jobId)
                 }
             }
+            runningChangeListeners.forEach { it(handle.id) }
         }
         return JobHandle(
             handle as TaskHandle<Any?, Any?>,
@@ -485,14 +496,48 @@ fun Scheduler.jobStates(handle: TaskHandle<*, *>, replayFinished: Boolean = fals
     return stateChanges(handle, completeOnJobCancel = false, replay = if (replayFinished) Replay.Last else Replay.Running)
 }
 
-private enum class Replay { None, Running, Last }
+private enum class Replay { None, Running, Finished, Last }
 
 /**
- * Emits results of successfully finished jobs of the task represented by [handle], see [jobStates]
+ * Emits only [RunState.FinishedSuccess] and [RunState.FinishedError] states of jobs of the task represented by
+ * [handle], never completes on job cancellation.
+ *
+ * @param replayLast when true, the state of the most recently finished job is replayed first, even while another
+ * job of the task is running. Cancelled jobs are never replayed.
+ */
+fun Scheduler.finishedStates(handle: TaskHandle<*, *>, replayLast: Boolean = false): Flow<JobState> {
+    return stateChanges(handle, completeOnJobCancel = false, replay = if (replayLast) Replay.Finished else Replay.None)
+        .filter { it.runState == RunState.FinishedSuccess || it.runState == RunState.FinishedError }
+}
+
+/**
+ * Emits [Scheduler.isRunning] for [handle] on subscription and then whenever it changes: a job is started,
+ * finishes or is cancelled (including by cancelling the scheduler scope).
+ * Jobs started with [Scheduler.startSuspended] are not counted.
+ */
+@OptIn(ExperimentalUuidApi::class)
+fun Scheduler.runningStates(handle: TaskHandle<*, *>): Flow<Boolean> {
+    return callbackFlow {
+        val listener: (Uuid) -> Unit = { taskId -> if (taskId == handle.id) trySend(Unit) }
+        runningChangeListeners.add(listener)
+        send(Unit)
+        awaitClose { runningChangeListeners.remove(listener) }
+    }
+        .buffer(Channel.CONFLATED)
+        // read on collection, so concurrent changes can not be emitted out of order
+        .map { isRunning(handle) }
+        .distinctUntilChanged()
+}
+
+/**
+ * Emits results of successfully finished jobs of the task represented by [handle].
+ *
+ * @param replayFinished when true, the last finished job is replayed first if it succeeded, even while another
+ * job of the task is running. If the last finished job failed, nothing is replayed. See [finishedStates]
  */
 fun <R> Scheduler.successResults(handle: TaskHandle<*, R>, replayFinished: Boolean = false): Flow<R> {
     @Suppress("UNCHECKED_CAST")
-    return jobStates(handle, replayFinished).filter { it.runState == RunState.FinishedSuccess }.map { it.resultOf(handle) as R }
+    return finishedStates(handle, replayFinished).filter { it.runState == RunState.FinishedSuccess }.map { it.resultOf(handle) as R }
 }
 
 /**
@@ -507,10 +552,13 @@ fun <R> JobState.resultOf(handle: TaskHandle<*, R>): R? {
 }
 
 /**
- * Emits errors of failed jobs of the task represented by [handle], see [jobStates]
+ * Emits errors of failed jobs of the task represented by [handle].
+ *
+ * @param replayFinished when true, the last finished job is replayed first if it failed, even while another
+ * job of the task is running. If the last finished job succeeded, nothing is replayed. See [finishedStates]
  */
 fun Scheduler.errors(handle: TaskHandle<*, *>, replayFinished: Boolean = false): Flow<Throwable> {
-    return jobStates(handle, replayFinished).mapNotNull { it.error }
+    return finishedStates(handle, replayFinished).mapNotNull { it.error }
 }
 
 @OptIn(ExperimentalUuidApi::class)
@@ -536,6 +584,7 @@ private fun Scheduler.stateChanges(
         val replayed = when (replay) {
             Replay.None -> null
             Replay.Running -> runningTaskState[handle.id]
+            Replay.Finished -> finishedTaskState[handle.id]
             Replay.Last -> runningTaskState[handle.id] ?: finishedTaskState[handle.id]
         }
         replayed?.let { listener.onJobStateChanged(it) }

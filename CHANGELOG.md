@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0 - 2026-11-10
+
+### Added
+
+- `Scheduler.finishedStates(handle, replayLast = false): Flow<JobState>`: only `FinishedSuccess` and
+  `FinishedError` states of the task, never completes on job cancellation. With `replayLast = true` the last
+  finished job is replayed first, even while another job runs. The remo `results(replayLast)` equivalent.
+- `Scheduler.runningStates(handle): Flow<Boolean>`: `isRunning(handle)` on subscription, then on every job start,
+  finish and cancellation (including cancelling the scheduler scope). For progress indicators, replaces remo's
+  `JobFlow.state`.
+
+### Changed
+
+- `successResults(handle, replayFinished = true)` and `errors(handle, replayFinished = true)` replay the last
+  finished job even while another job of the task runs (they used to replay nothing until the running job finished).
+  As in remo, the last finished state is replayed and then filtered: after an error `successResults` replays
+  nothing and `errors` replays the error.
+
 ## 1.1.0 - 2026-11-09
 
 ### Added

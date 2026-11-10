@@ -3,11 +3,13 @@
 package ru.kode.reactivetasks
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -44,6 +46,13 @@ class ObserveStateChangesTest {
         }
         runCurrent() // subscribe before the test starts anything
         return collected
+    }
+
+    private fun <T> TestScope.values(flow: Flow<T>): List<T> {
+        val values = mutableListOf<T>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { flow.collect { values += it } }
+        runCurrent()
+        return values
     }
 
     @Test
@@ -235,5 +244,126 @@ class ObserveStateChangesTest {
 
         advanceUntilIdle()
         assertFalse(scheduler.isRunning(task))
+    }
+
+    @Test
+    fun successResultsReplayDuringReRunReturnsPreviousResult() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { n: Int -> delay(1000); n }
+        scheduler.start(task, 1)
+        advanceUntilIdle()
+        scheduler.start(task, 2)
+        runCurrent()
+
+        val results = values(scheduler.successResults(task, replayFinished = true))
+        assertEquals(listOf(1), results)
+
+        advanceUntilIdle()
+        assertEquals(listOf(1, 2), results)
+    }
+
+    @Test
+    fun replayAfterErrorReplaysErrorOnly() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { n: Int -> if (n < 0) error("negative") else n }
+        scheduler.start(task, 1)
+        scheduler.start(task, -1)
+        advanceUntilIdle()
+
+        assertEquals(emptyList(), values(scheduler.successResults(task, replayFinished = true)))
+        assertEquals(listOf("negative"), values(scheduler.errors(task, replayFinished = true)).map { it.message })
+    }
+
+    @Test
+    fun finishedStatesReplaysLastFinishedDuringRunningJob() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { n: Int -> delay(1000); n }
+        scheduler.start(task, 1)
+        advanceUntilIdle()
+        scheduler.start(task, 2)
+        runCurrent()
+
+        val collected = collect(scheduler.finishedStates(task, replayLast = true))
+        assertEquals(listOf(RunState.FinishedSuccess), collected.states.map { it.runState })
+        assertEquals(1, collected.states.single().resultOf(task))
+
+        val cancelled = scheduler.start(task, 3)
+        runCurrent()
+        scheduler.cancel(cancelled)
+        advanceUntilIdle()
+        assertEquals(listOf(1, 2), collected.states.map { it.resultOf(task) })
+        assertTrue(collected.job.isActive)
+    }
+
+    @Test
+    fun noReplayWhenReplayIsOff() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { n: Int -> if (n < 0) error("negative") else n }
+        scheduler.start(task, 1)
+        advanceUntilIdle()
+
+        assertTrue(collect(scheduler.finishedStates(task)).states.isEmpty())
+        assertEquals(emptyList(), values(scheduler.successResults(task)))
+        scheduler.start(task, -1)
+        advanceUntilIdle()
+        assertEquals(emptyList(), values(scheduler.errors(task)))
+    }
+
+    @Test
+    fun runningStatesGoesFalseAfterCancel() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
+        val runningOnCancel = mutableListOf<Boolean>()
+        scheduler.addTaskStateChangeListener(object : TaskStateChangeListener {
+            override suspend fun onJobStateChanged(state: JobState) = Unit
+            override fun onJobCancelled(taskId: Uuid, jobId: Uuid) {
+                runningOnCancel += scheduler.isRunning(task)
+            }
+        })
+        val running = values(scheduler.runningStates(task))
+        assertEquals(listOf(false), running)
+
+        scheduler.start(task, 1)
+        runCurrent()
+        assertEquals(listOf(false, true), running)
+
+        scheduler.cancel(task)
+        runCurrent()
+        // the cancelled job is no longer counted when onJobCancelled fires
+        assertEquals(listOf(false), runningOnCancel)
+        assertEquals(listOf(false, true, false), running)
+    }
+
+    @Test
+    fun runningStatesStaysTrueWhenStartLatestReplacesJob() = runTest {
+        val scheduler = testScheduler()
+        val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
+        val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
+        val running = values(scheduler.runningStates(task))
+
+        val first = scheduler.start(task, 1)
+        runCurrent()
+        scheduler.startLatest(task, 2)
+        runCurrent()
+        assertEquals(listOf(first.id), listener.cancelled.map { it.jobId })
+        assertEquals(listOf(false, true), running)
+
+        advanceUntilIdle()
+        assertEquals(listOf(false, true, false), running)
+    }
+
+    @Test
+    fun runningStatesGoesFalseWhenSchedulerScopeIsCancelled() = runTest {
+        val parent = Job()
+        val scheduler = Scheduler(CoroutineScope(parent), StandardTestDispatcher(testScheduler), UncaughtRecorder().handler)
+        val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
+        val running = values(scheduler.runningStates(task))
+
+        scheduler.start(task, 1)
+        runCurrent()
+        parent.cancel()
+        advanceUntilIdle()
+
+        assertEquals(listOf(false, true, false), running)
     }
 }
