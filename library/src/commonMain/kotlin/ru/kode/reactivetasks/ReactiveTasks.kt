@@ -1,5 +1,7 @@
 package ru.kode.reactivetasks
 
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -222,6 +224,8 @@ class Scheduler(
      */
     internal val finishedTaskState: MutableMap<Uuid, JobState> = createConcurrentMutableMap()
 
+    private val startIfIdleLock = SynchronizedObject()
+
     private val stateChangeListeners: MutableList<TaskStateChangeListener> = createConcurrentMutableList()
 
     /**
@@ -319,6 +323,53 @@ class Scheduler(
         argumentCache.put(jobId, argument as Any?)
         argumentCache.put(handle.id, argument as Any?)
         return executeWrappedBody(handle, jobId, argument, tag)
+    }
+
+    /**
+     * Starts a new job for [handle] unless a job started with [start], [startLatest] or [restart] is still running
+     * ([isRunning]), in which case the call is dropped. The check and the start are one atomic step with respect to
+     * other [startIfIdle] calls, so two concurrent calls start exactly one job. Calls to [start], [startLatest] and
+     * [restart] are not serialized with it.
+     * Replaces remo's `SkipNew` / `Disallow`.
+     *
+     * @return the started job, or null if the call was dropped
+     */
+    fun <A> startIfIdle(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle? {
+        return synchronized(startIfIdleLock) {
+            if (isRunning(handle)) null else startInternal(handle, argument, tag, cancelPrevious = false)
+        }
+    }
+
+    /**
+     * Same as `startIfIdle(handle, Unit)`
+     */
+    fun startIfIdle(handle: TaskHandle<Unit, *>): JobHandle? = startIfIdle(handle, Unit)
+
+    /**
+     * Runs [startSuspended] unless a job started with [start], [startLatest] or [restart] is still running
+     * ([isRunning]): then the call is dropped and returns null immediately, it does not wait for the running job.
+     * Never throws for errors of the task body, they are returned in the [JobState].
+     * Unlike [startIfIdle] this is not atomic: jobs started with [startSuspended] are not counted by [isRunning], so
+     * concurrent calls can all run. Replaces remo's `start().join()` with `SkipNew` / `Disallow`.
+     *
+     * @return the state of the finished job, or null if the call was dropped
+     */
+    suspend fun <A, R> startSuspendedIfIdle(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState? {
+        return if (isRunning(handle)) null else startSuspended(handle, argument, tag)
+    }
+
+    /**
+     * Same as `startSuspendedIfIdle(handle, Unit)`
+     */
+    suspend fun startSuspendedIfIdle(handle: TaskHandle<Unit, *>): JobState? = startSuspendedIfIdle(handle, Unit)
+
+    /**
+     * Calls [cancelAll] when the job of [scope] completes (normally or by cancellation), or right away if it
+     * already has. The scheduler stays usable afterwards. Not single-use: every call registers one more
+     * [cancelAll] for the completion of the given scope, there is no unbinding.
+     */
+    fun bindTo(scope: CoroutineScope) {
+        scope.coroutineContext.job.invokeOnCompletion { cancelAll() }
     }
 
     private fun <A> startInternal(handle: TaskHandle<A, *>, argument: A, tag: Any?, cancelPrevious: Boolean): JobHandle {
@@ -544,6 +595,21 @@ fun Scheduler.runningStates(handle: TaskHandle<*, *>): Flow<Boolean> {
         // read on collection, so concurrent changes can not be emitted out of order
         .map { isRunning(handle) }
         .distinctUntilChanged()
+}
+
+/**
+ * Emits the outcome of each finished job of the task represented by [handle] as a [Result]: success holds the
+ * job's result (see [resultOf]), failure holds its error. Cancelled jobs emit nothing. See [finishedStates]
+ *
+ * @param replayLast when true (the default), the most recently finished job is replayed first, even while another
+ * job of the task is running
+ */
+fun <R> Scheduler.results(handle: TaskHandle<*, R>, replayLast: Boolean = true): Flow<Result<R>> {
+    @Suppress("UNCHECKED_CAST")
+    return finishedStates(handle, replayLast).map { state ->
+        if (state.runState == RunState.FinishedSuccess) Result.success(state.resultOf(handle) as R)
+        else Result.failure(checkNotNull(state.error))
+    }
 }
 
 /**

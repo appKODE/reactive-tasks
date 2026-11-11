@@ -29,15 +29,12 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(libs.kotlin.coroutines)
+            implementation(libs.kotlinx.atomicfu)
         }
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlin.coroutines.test)
-        }
-
-        iosMain.dependencies {
-            implementation(libs.kotlinx.atomicfu)
         }
     }
 }

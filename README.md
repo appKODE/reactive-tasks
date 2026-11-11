@@ -7,7 +7,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 Kotlin Multiplatform: JVM, Android, iOS (`iosX64`, `iosArm64`, `iosSimulatorArm64`).
 
 ```kotlin
-implementation("ru.kode:reactive-tasks:1.3.0")
+implementation("ru.kode:reactive-tasks:1.4.0")
 ```
 
 # How to use
@@ -134,6 +134,31 @@ runBlocking {
 // Cancelling scheduler.scope itself makes the scheduler unusable for good
 //
 scheduler.cancelAll()
+
+//
+// Start only if no job of the task is running, atomically (two concurrent calls start one job).
+// Returns the JobHandle, or null if the call was dropped
+//
+scheduler.startIfIdle(fetchTaskHandle, "arg")
+scheduler.startIfIdle(unitTaskHandle)
+
+//
+// Same, but suspends until the started job is done and returns its JobState, null if the call was dropped.
+// Does not wait for an already running job. Not atomic: startSuspended jobs are not counted by isRunning
+//
+scheduler.startSuspendedIfIdle(fetchTaskHandle, "arg")
+
+//
+// Cancel all jobs (cancelAll) whenever the given scope completes. The scheduler stays usable.
+// Every call adds one more such callback, there is no unbinding
+//
+scheduler.bindTo(viewModelScope)
+
+//
+// Outcomes of finished jobs as kotlin.Result: success holds the result, failure holds the error.
+// replayLast = true (default) replays the last finished job first
+//
+scheduler.results(fetchTaskHandle).collect { result -> result.onSuccess { } .onFailure { } }
 ```
 
 # Migrating from remo
@@ -147,7 +172,7 @@ reactive-tasks drops the `ReactiveModel` base class and `kotlin-result`, and add
 // before
 implementation("ru.kode:remo:1.2.0") // or ru.kode:remo:9.0.1, ru.kode.android:remo:9.1.0
 // after
-implementation("ru.kode:reactive-tasks:1.3.0")
+implementation("ru.kode:reactive-tasks:1.4.0")
 ```
 
 remo 1.2.0 and 9.x differ only in how a model gets its scope; tasks and `JobFlow` are the same.
@@ -155,10 +180,10 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 
 ## API map
 
-| remo 1.2.0 | remo 9.0.1 | reactive-tasks 1.3.0 |
+| remo 1.2.0 | remo 9.0.1 | reactive-tasks 1.4.0 |
 |---|---|---|
 | `class M : ReactiveModel(dispatcher)` | `class M(scope) : ReactiveModel(scope)` | `class M(scheduler: Scheduler)`, no base class |
-| `model.start(parentScope)`, `Job.cancel()` to stop, can be started again with a new scope | constructor `scope`, cancel it to stop | `Scheduler(scope)`, cancel `scope` to stop for good; to stop and start again: `parentScope.coroutineContext.job.invokeOnCompletion { scheduler.cancelAll() }` on each start |
+| `model.start(parentScope)`, `Job.cancel()` to stop, can be started again with a new scope | constructor `scope`, cancel it to stop | `Scheduler(scope)`, cancel `scope` to stop for good; to stop and start again: `scheduler.bindTo(parentScope)` on each start |
 | `onPostStart()` | `init {}` (`onPostStart` deprecated) | 1.x: a `start(parentScope)` function of the model, called where `model.start` was (runs on every start); 9.x: `init {}` |
 | `scope.launch {}` inside the model | same | `scheduler.scope.launch {}` |
 | `uncaughtExceptions: Flow<Throwable>` | same | `Scheduler(onUncaughtException = { taskId, taskName, e -> })` |
@@ -170,8 +195,9 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 | one `WatchContext` shared by several tasks | same | `merge(jobStates(a), jobStates(b))`, or one task with a sealed argument |
 | `fetch.start(id)`: `Job` | same | `scheduler.start(fetch, id)`: `JobHandle` |
 | `job.cancel()` | same | `scheduler.cancel(jobHandle)`, `scheduler.cancel(fetch)` (all jobs of the task) |
-| `start(id, queueingStrategy = Disallow)` (default, throws if a job runs) | same | no equivalent, `start` runs jobs in parallel |
-| `start(id, queueingStrategy = SkipNew)` | same | `if (!scheduler.isRunning(fetch)) scheduler.start(fetch, id)` |
+| `start(id, queueingStrategy = Disallow)` (default, throws if a job runs) | same | `scheduler.startIfIdle(fetch, id)`: drops the start instead of throwing; plain `start` runs jobs in parallel |
+| `start(id, queueingStrategy = SkipNew)` | same | `scheduler.startIfIdle(fetch, id)` (atomic, returns `JobHandle?`, null if dropped) |
+| `start(id, SkipNew / Disallow).join()` | same | `scheduler.startSuspendedIfIdle(fetch, id)`: runs and waits if idle, returns `JobState?` (null, without waiting, if a job runs) |
 | restart a running job with a new argument | same | `scheduler.startLatest(fetch, id)`: cancels running jobs of the task |
 | re-run with the last argument | same | `scheduler.restart(fetch)` |
 | `start(id, StartScheduled.Lazily())` | same | `flow { emit(scheduler.startSuspended(fetch, id)) }`, or `shareIn(…).onSubscription { scheduler.start(fetch, id) }` |
@@ -180,8 +206,8 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 | `fetch.jobFlow.state`: `Idle` / `Running` (progress) | same | `scheduler.runningStates(fetch)`: `Flow<Boolean>`, current value on subscribe, `false` after a cancel |
 | `fetch.jobFlow.successResults()` | same | `scheduler.successResults(fetch)`: `Flow<R>` |
 | `fetch.jobFlow.errors()` | same | `scheduler.errors(fetch)`: `Flow<Throwable>` |
-| `fetch.jobFlow.results()`: `Result<R, Throwable>` | same | `jobStates(fetch)`: `JobState` with `runState`, `error`, `resultOf(fetch)`: `R?` |
-| `results(replayLast = true)` | same | `scheduler.finishedStates(fetch, replayLast = true)`: replays the last finished job even while a new one runs |
+| `fetch.jobFlow.results()`: `Result<R, Throwable>` (kotlin-result) | same | `scheduler.results(fetch)`: `Flow<kotlin.Result<R>>` (`replayLast = true` by default), or `jobStates(fetch)`: `JobState` with `runState`, `error`, `resultOf(fetch)`: `R?` |
+| `results(replayLast = true)` | same | `scheduler.results(fetch, replayLast = true)`, or `finishedStates(fetch, replayLast = true)` for `JobState`: replays the last finished job even while a new one runs |
 | `successResults(replayLast = true)`, `errors(replayLast = true)` | same | `successResults(fetch, replayFinished = true)`, `errors(fetch, replayFinished = true)` |
 | `mapSuccessResults {}` | same | `successResults(fetch).map {}` |
 
