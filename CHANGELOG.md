@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 - 2026-11-11
+
+### Added
+
+- `Scheduler.cancelAll()`: cancels the jobs of all tasks and all other coroutines launched in `scheduler.scope`, the
+  scheduler stays usable. Cancelling `scheduler.scope` itself makes the scheduler unusable for good (later starts and
+  launches do nothing), so `cancelAll()` is the way to stop and start again, e.g. a remo 1.x model started again with
+  a new scope.
+
 ## 1.2.0 - 2026-11-10
 
 ### Added

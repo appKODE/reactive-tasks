@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -460,6 +461,46 @@ class SchedulerTest {
         assertEquals(listOf(RunState.Running, RunState.FinishedSuccess), bystander.states.map { it.runState })
         // added during the Running dispatch: misses that snapshot, sees the next one
         assertEquals(listOf(RunState.FinishedSuccess), late.states.map { it.runState })
+    }
+
+    // endregion
+
+    // region cancelAll
+
+    @Test
+    fun cancelAllCancelsJobsAndCoroutinesAndKeepsSchedulerUsable() = runTest {
+        val scheduler = testScheduler()
+        val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
+        val task = scheduler.registerTask("t") { _: Int -> delay(1_000) }
+        var ticks = 0
+        fun launchTicker() = scheduler.scope.launch {
+            while (true) {
+                delay(100)
+                ticks++
+            }
+        }
+
+        val job = scheduler.start(task, 1)
+        val ticker = launchTicker()
+        runCurrent()
+        assertTrue(scheduler.isRunning(task))
+
+        scheduler.cancelAll()
+        runCurrent()
+
+        assertTrue(job.job.isCancelled)
+        assertTrue(ticker.isCancelled)
+        assertTrue(!scheduler.isRunning(task))
+        assertEquals(listOf(job.id), listener.cancelled.map { it.jobId })
+
+        // the scheduler is still usable: tasks start and coroutines launch again
+        scheduler.start(task, 2)
+        launchTicker()
+        advanceTimeBy(1_050)
+        runCurrent()
+
+        assertEquals(RunState.FinishedSuccess, listener.states.last { it.argument == 2 }.runState)
+        assertEquals(10, ticks)
     }
 
     // endregion
