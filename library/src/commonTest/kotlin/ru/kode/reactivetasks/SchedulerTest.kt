@@ -3,9 +3,18 @@
 package ru.kode.reactivetasks
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -501,6 +510,109 @@ class SchedulerTest {
 
         assertEquals(RunState.FinishedSuccess, listener.states.last { it.argument == 2 }.runState)
         assertEquals(10, ticks)
+    }
+
+    // endregion
+    // region startIfIdle, startSuspendedIfIdle, bindTo, results
+
+    @Test
+    fun startIfIdleDropsStartWhileRunning() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { _: Int -> delay(100) }
+
+        val first = scheduler.startIfIdle(task, 1)
+        val second = scheduler.startIfIdle(task, 2)
+        runCurrent()
+
+        assertTrue(first != null)
+        assertNull(second)
+        advanceUntilIdle()
+        assertTrue(scheduler.startIfIdle(task, 3) != null)
+    }
+
+    @Test
+    fun startIfIdleUnitOverloadStartsWithUnit() = runTest {
+        val scheduler = testScheduler()
+        val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
+        val task = scheduler.registerTask("t") { _: Unit -> }
+
+        scheduler.startIfIdle(task)
+        advanceUntilIdle()
+
+        assertEquals(Unit, listener.states.last().argument)
+        assertEquals(RunState.FinishedSuccess, listener.states.last().runState)
+    }
+
+    @Test
+    fun concurrentStartIfIdleStartsExactlyOneJob() = runTest {
+        val scheduler = Scheduler(CoroutineScope(SupervisorJob()), Dispatchers.Default)
+        val gate = CompletableDeferred<Unit>()
+        val task = scheduler.registerTask("t") { _: Int -> gate.await() }
+
+        val started = withContext(Dispatchers.Default) {
+            (1..200).map { async { scheduler.startIfIdle(task, it) } }.awaitAll()
+        }
+
+        assertEquals(1, started.count { it != null })
+        gate.complete(Unit)
+        scheduler.cancelAll()
+    }
+
+    @Test
+    fun startSuspendedIfIdleRunsWhenIdleAndDropsWhileRunning() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { x: Int -> x * 2 }
+        val slow = scheduler.registerTask("slow") { _: Int -> delay(100) }
+
+        val state = scheduler.startSuspendedIfIdle(task, 21)
+        assertEquals(RunState.FinishedSuccess, state?.runState)
+        assertEquals(42, state?.resultOf(task))
+
+        scheduler.start(slow, 1)
+        runCurrent()
+        assertNull(scheduler.startSuspendedIfIdle(slow, 2))
+    }
+
+    @Test
+    fun bindToCancelsAllWhenScopeCompletesAndSchedulerStaysUsable() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("t") { _: Int -> delay(1_000) }
+        val bound = Job()
+        scheduler.bindTo(CoroutineScope(bound))
+
+        val job = scheduler.start(task, 1)
+        runCurrent()
+        assertTrue(scheduler.isRunning(task))
+
+        bound.cancel()
+        runCurrent()
+
+        assertTrue(job.job.isCancelled)
+        assertTrue(!scheduler.isRunning(task))
+        assertTrue(scheduler.startIfIdle(task, 2) != null)
+    }
+
+    @Test
+    fun resultsEmitsSuccessAndFailureAndReplaysLast() = runTest {
+        val scheduler = testScheduler()
+        val boom = IllegalStateException("boom")
+        val task = scheduler.registerTask("t") { x: Int -> if (x < 0) throw boom else x }
+
+        scheduler.startSuspended(task, 1)
+        scheduler.startSuspended(task, -1)
+
+        // replayLast is true by default: only the most recent finished job is replayed
+        val replayed = scheduler.results(task).first()
+        assertSame(boom, replayed.exceptionOrNull())
+
+        val live = mutableListOf<Result<Int>>()
+        val collector = launch { scheduler.results(task, replayLast = false).toList(live) }
+        runCurrent()
+        scheduler.startSuspended(task, 7)
+        runCurrent()
+        collector.cancel()
+
+        assertEquals(listOf(7), live.map { it.getOrThrow() })
     }
 
     // endregion

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.0 - 2026-11-11
+
+### Added
+
+- `Scheduler.startIfIdle(handle, argument, tag)` and `startIfIdle(handle)` for `Unit` tasks: starts a job unless one is
+  running. Atomic with respect to other `startIfIdle` calls (two concurrent calls start one job). Returns the
+  `JobHandle`, or null if dropped. Replaces remo `SkipNew` / `Disallow`.
+- `Scheduler.startSuspendedIfIdle(handle, argument, tag)` and `startSuspendedIfIdle(handle)`: runs `startSuspended`
+  unless a job is running, returns the `JobState`, or null (without waiting) if dropped.
+- `Scheduler.bindTo(scope)`: calls `cancelAll()` when the job of `scope` completes.
+- `Scheduler.results(handle, replayLast = true)`: `Flow<kotlin.Result<R>>` of finished jobs.
+
+### Changed
+
+- `kotlinx-atomicfu` is now an `implementation` dependency of all targets, it was iOS only.
+
 ## 1.3.0 - 2026-11-11
 
 ### Added
