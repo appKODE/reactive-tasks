@@ -178,7 +178,9 @@ interface TaskStateChangeListener {
 class Scheduler(
     /**
      * Scope to be used as a parent for all tasks/jobs in this scheduler.
-     * If this scope gets cancelled, all tasks/jobs will be cancelled too.
+     * If this scope gets cancelled, all tasks/jobs will be cancelled too and the scheduler can't be used
+     * anymore: later starts and coroutines launched in it do nothing. Use [cancelAll] to stop the work and keep
+     * the scheduler usable.
      */
     val scope: CoroutineScope,
     /**
@@ -223,6 +225,11 @@ class Scheduler(
     private val stateChangeListeners: MutableList<TaskStateChangeListener> = createConcurrentMutableList()
 
     /**
+     * Jobs of the task scopes created by [registerTask], they are kept active by [cancelAll]
+     */
+    private val taskScopeJobs: MutableList<Job> = createConcurrentMutableList()
+
+    /**
      * Called with a taskId when a job of that task is launched or completes (normally or by cancellation)
      */
     internal val runningChangeListeners: MutableList<(taskId: Uuid) -> Unit> = createConcurrentMutableList()
@@ -256,6 +263,7 @@ class Scheduler(
     ): TaskHandle<A, R> {
         val taskId = Uuid.random()
         val scope = CoroutineScope(SupervisorJob(scope.coroutineContext.job) + createExceptionHandler(taskId, name) + dispatcher)
+        taskScopeJobs.add(scope.coroutineContext.job)
         return TaskHandle(
             name = name,
             id = taskId,
@@ -444,6 +452,15 @@ class Scheduler(
      */
     suspend fun cancelAndJoin(jobHandle: JobHandle) {
         jobHandle.job.cancelAndJoin()
+    }
+
+    /**
+     * Cancels the jobs of all tasks and all other coroutines launched in [scope], unlike cancelling [scope] the
+     * scheduler stays usable: tasks can be started and coroutines launched in [scope] again.
+     * Registered change listeners will get [TaskStateChangeListener#onJobCancelled] notifications
+     */
+    fun cancelAll() {
+        scope.coroutineContext.job.children.forEach { if (it in taskScopeJobs) it.cancelChildren() else it.cancel() }
     }
 }
 
