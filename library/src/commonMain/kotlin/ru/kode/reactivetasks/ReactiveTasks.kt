@@ -59,9 +59,9 @@ class TaskHandle<A, R>(
 @OptIn(ExperimentalUuidApi::class)
 class JobHandle(
     val taskHandle: TaskHandle<Any?, Any?>,
-    internal val argument: Any? = null,
     val id: Uuid,
     internal val job: Job,
+    internal val argument: Any? = null,
 ) {
     companion object {
         /**
