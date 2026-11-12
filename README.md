@@ -7,7 +7,7 @@ A library for scheduling, executing and observing repeateble reactive tasks.
 Kotlin Multiplatform: JVM, Android, iOS (`iosX64`, `iosArm64`, `iosSimulatorArm64`).
 
 ```kotlin
-implementation("ru.kode:reactive-tasks:2.0.0")
+implementation("ru.kode:reactive-tasks:2.0.1")
 ```
 
 # How to use
@@ -172,7 +172,7 @@ reactive-tasks drops the `ReactiveModel` base class and `kotlin-result`, and add
 // before
 implementation("ru.kode:remo:1.2.0") // or ru.kode:remo:9.0.1, ru.kode.android:remo:9.1.0
 // after
-implementation("ru.kode:reactive-tasks:2.0.0")
+implementation("ru.kode:reactive-tasks:2.0.1")
 ```
 
 remo 1.2.0 and 9.x differ only in how a model gets its scope; tasks and `JobFlow` are the same.
@@ -180,7 +180,7 @@ Below `scheduler` is a `Scheduler`, `fetch` is a `TaskHandle<A, R>`.
 
 ## API map
 
-| remo 1.2.0 | remo 9.0.1 | reactive-tasks 2.0.0 |
+| remo 1.2.0 | remo 9.0.1 | reactive-tasks 2.0.1 |
 |---|---|---|
 | `class M : ReactiveModel(dispatcher)` | `class M(scope) : ReactiveModel(scope)` | `class M(scheduler: Scheduler)`, no base class |
 | `model.start(parentScope)`, `Job.cancel()` to stop, can be started again with a new scope | constructor `scope`, cancel it to stop | `Scheduler(scope)`, cancel `scope` to stop for good; to stop and start again: `scheduler.bindTo(parentScope)` on each start |
