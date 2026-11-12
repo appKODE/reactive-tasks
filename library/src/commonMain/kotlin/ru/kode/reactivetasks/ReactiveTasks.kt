@@ -165,16 +165,16 @@ interface TaskStateChangeListener {
  * Task scheduler is the main entry point of the task system.
  *
  * Register tasks with [registerTask] which returns a task handle.
- * This handle can be passed to [start] or [startLatest] to start the task's body.
+ * This handle can be passed to [launch] or [launchLatest] to start the task's body.
  * An instance of started task's body is called a "job" and is represented by the [JobHandle] which
- * is returned by [start] or [startLatest].
+ * is returned by [launch] or [launchLatest].
  *
- * Tasks can also be started in a "blocking" manner by calling [startSuspended] which will execute
+ * Tasks can also be started in a "blocking" manner by calling [start] which will execute
  * tasks body, suspend and return the result. Note that you still can observe this job's state with a
  * registered [TaskStateChangeListener].
  *
- * Tasks and Jobs can also be restarted with corresponding [restart] functions. They will reuse the arguments
- * passed to [start], see [restart] documentation for more information.
+ * Tasks and Jobs can also be restarted with corresponding [relaunch] functions. They will reuse the arguments
+ * passed to [launch], see [relaunch] documentation for more information.
  */
 @OptIn(ExperimentalUuidApi::class)
 class Scheduler(
@@ -254,7 +254,7 @@ class Scheduler(
 
     /**
      * Registers a task in this scheduler. Returns a [TaskHandle] which can be used to start
-     * this task with [start], [startLatest], [startSuspended].
+     * this task with [launch], [launchLatest], [start].
      *
      * @param name a descriptive task name. Usually used for debug purposes.
      * @param dispatcher a dispatcher to use when running this task
@@ -285,7 +285,7 @@ class Scheduler(
      * @param argument an argument to pass to the task's body function
      * @param tag an arbitrary tag to assign to the resulting task job. It will be stored in [JobState] and can be used identify groups of task jobs when needed
      */
-    fun <A> start(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle {
+    fun <A> launch(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle {
         return startInternal(handle, argument, tag, cancelPrevious = false)
     }
 
@@ -299,7 +299,7 @@ class Scheduler(
      * @param argument an argument to pass to the task's body function
      * @param tag an arbitrary tag to assign to the resulting task job. It will be stored in [JobState] and can be used identify groups of task jobs when needed
      */
-    fun <A> startLatest(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle {
+    fun <A> launchLatest(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle {
         return startInternal(handle, argument, tag, cancelPrevious = true)
     }
 
@@ -318,7 +318,7 @@ class Scheduler(
      * @param argument an argument to pass to the task's body function
      * @param tag an arbitrary tag to assign to the resulting task job. It will be stored in [JobState] and can be used identify groups of task jobs when needed
      */
-    suspend fun <A, R> startSuspended(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState {
+    suspend fun <A, R> start(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState {
         val jobId = Uuid.random()
         argumentCache.put(jobId, argument as Any?)
         argumentCache.put(handle.id, argument as Any?)
@@ -326,42 +326,42 @@ class Scheduler(
     }
 
     /**
-     * Starts a new job for [handle] unless a job started with [start], [startLatest] or [restart] is still running
+     * Starts a new job for [handle] unless a job started with [launch], [launchLatest] or [relaunch] is still running
      * ([isRunning]), in which case the call is dropped. The check and the start are one atomic step with respect to
-     * other [startIfIdle] calls, so two concurrent calls start exactly one job. Calls to [start], [startLatest] and
-     * [restart] are not serialized with it.
+     * other [launchIfIdle] calls, so two concurrent calls start exactly one job. Calls to [launch], [launchLatest] and
+     * [relaunch] are not serialized with it.
      * Replaces remo's `SkipNew` / `Disallow`.
      *
      * @return the started job, or null if the call was dropped
      */
-    fun <A> startIfIdle(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle? {
+    fun <A> launchIfIdle(handle: TaskHandle<A, *>, argument: A, tag: Any? = null): JobHandle? {
         return synchronized(startIfIdleLock) {
             if (isRunning(handle)) null else startInternal(handle, argument, tag, cancelPrevious = false)
         }
     }
 
     /**
-     * Same as `startIfIdle(handle, Unit)`
+     * Same as `launchIfIdle(handle, Unit)`
      */
-    fun startIfIdle(handle: TaskHandle<Unit, *>): JobHandle? = startIfIdle(handle, Unit)
+    fun launchIfIdle(handle: TaskHandle<Unit, *>): JobHandle? = launchIfIdle(handle, Unit)
 
     /**
-     * Runs [startSuspended] unless a job started with [start], [startLatest] or [restart] is still running
+     * Runs [start] unless a job started with [launch], [launchLatest] or [relaunch] is still running
      * ([isRunning]): then the call is dropped and returns null immediately, it does not wait for the running job.
      * Never throws for errors of the task body, they are returned in the [JobState].
-     * Unlike [startIfIdle] this is not atomic: jobs started with [startSuspended] are not counted by [isRunning], so
+     * Unlike [launchIfIdle] this is not atomic: jobs started with [start] are not counted by [isRunning], so
      * concurrent calls can all run. Replaces remo's `start().join()` with `SkipNew` / `Disallow`.
      *
      * @return the state of the finished job, or null if the call was dropped
      */
-    suspend fun <A, R> startSuspendedIfIdle(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState? {
-        return if (isRunning(handle)) null else startSuspended(handle, argument, tag)
+    suspend fun <A, R> startIfIdle(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState? {
+        return if (isRunning(handle)) null else start(handle, argument, tag)
     }
 
     /**
-     * Same as `startSuspendedIfIdle(handle, Unit)`
+     * Same as `startIfIdle(handle, Unit)`
      */
-    suspend fun startSuspendedIfIdle(handle: TaskHandle<Unit, *>): JobState? = startSuspendedIfIdle(handle, Unit)
+    suspend fun startIfIdle(handle: TaskHandle<Unit, *>): JobState? = startIfIdle(handle, Unit)
 
     /**
      * Calls [cancelAll] when the job of [scope] completes (normally or by cancellation), or right away if it
@@ -436,8 +436,8 @@ class Scheduler(
     }
 
     /**
-     * Returns true if a job started with [start], [startLatest] or [restart] for [handle] is still active.
-     * Jobs started with [startSuspended] are not counted.
+     * Returns true if a job started with [launch], [launchLatest] or [relaunch] for [handle] is still active.
+     * Jobs started with [start] are not counted.
      */
     fun isRunning(handle: TaskHandle<*, *>): Boolean {
         return handle.scope.coroutineContext.job.children.any()
@@ -445,14 +445,14 @@ class Scheduler(
 
     /**
      * Restarts the task referenced by [handle].
-     * Reuses the argument of the most recent [start] call.
+     * Reuses the argument of the most recent [launch] call.
      * Note that there is an overload which accepts [JobHandle] instead and it will use the argument from the particular job start.
      */
-    fun <A, R> restart(handle: TaskHandle<A, R>): JobHandle {
+    fun <A, R> relaunch(handle: TaskHandle<A, R>): JobHandle {
         @Suppress("UNCHECKED_CAST")
         val arg = argumentCache[handle.id] as? A?
         return if (arg != null) {
-            start(handle, arg)
+            launch(handle, arg)
         } else {
             JobHandle.NIL
         }
@@ -463,10 +463,10 @@ class Scheduler(
      * Reuses the argument of the specified job [handle].
      * Note that there is an overload which accepts [TaskHandle] instead and it will use the argument from the most recent task start.
      */
-    fun restart(handle: JobHandle): JobHandle {
+    fun relaunch(handle: JobHandle): JobHandle {
         val arg = argumentCache[handle.id]
         return if (arg != null) {
-            start(handle.taskHandle, arg)
+            launch(handle.taskHandle, arg)
         } else {
             JobHandle.NIL
         }
@@ -537,7 +537,7 @@ internal fun uncaughtExceptionMessage(taskId: Uuid, taskName: String): String {
  *
  * @param completeOnJobCancel when true (the default), the flow completes with a [CancellationException] as soon as
  * any job of this task is cancelled. Pass false to keep observing, e.g. when the task is started with
- * [Scheduler#startLatest] which cancels previous jobs. Jobs of other tasks never complete the flow.
+ * [Scheduler#launchLatest] which cancels previous jobs. Jobs of other tasks never complete the flow.
  */
 fun Scheduler.observeStateChanges(handle: TaskHandle<*, *>, completeOnJobCancel: Boolean): Flow<JobState> {
     return stateChanges(handle, completeOnJobCancel, replay = Replay.None)
@@ -581,7 +581,7 @@ fun Scheduler.finishedStates(handle: TaskHandle<*, *>, replayLast: Boolean = fal
 /**
  * Emits [Scheduler.isRunning] for [handle] on subscription and then whenever it changes: a job is started,
  * finishes or is cancelled (including by cancelling the scheduler scope).
- * Jobs started with [Scheduler.startSuspended] are not counted.
+ * Jobs started with [Scheduler.start] are not counted.
  */
 @OptIn(ExperimentalUuidApi::class)
 fun Scheduler.runningStates(handle: TaskHandle<*, *>): Flow<Boolean> {

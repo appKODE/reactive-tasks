@@ -81,7 +81,7 @@ class SchedulerTest {
         assertNotEquals(Uuid.NIL, a.id)
         assertEquals("TaskHandle[name=fetch,id=${a.id}]", a.toString())
 
-        val job = scheduler.start(a, "x")
+        val job = scheduler.launch(a, "x")
         assertEquals("JobHandle[id=${job.id}]", job.toString())
         assertSame<Any>(a, job.taskHandle)
     }
@@ -106,8 +106,8 @@ class SchedulerTest {
             seenDefault = currentCoroutineContext()[ContinuationInterceptor]
         }
 
-        scheduler.start(onCustom, Unit)
-        scheduler.start(onDefault, Unit)
+        scheduler.launch(onCustom, Unit)
+        scheduler.launch(onDefault, Unit)
         advanceUntilIdle()
 
         assertSame(custom, seenCustom)
@@ -124,7 +124,7 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("len") { s: String -> delay(100); s.length }
 
-        val job = scheduler.start(task, "abc", tag = "t")
+        val job = scheduler.launch(task, "abc", tag = "t")
         advanceUntilIdle()
 
         val running = JobState(job.id, task.id, "abc", RunState.Running, tag = "t")
@@ -142,7 +142,7 @@ class SchedulerTest {
         val boom = IllegalStateException("boom")
         val task = scheduler.registerTask<Unit, Unit>("fail") { throw boom }
 
-        val job = scheduler.start(task, Unit)
+        val job = scheduler.launch(task, Unit)
         advanceUntilIdle()
 
         assertEquals(listOf(RunState.Running, RunState.FinishedError), listener.states.map { it.runState })
@@ -158,8 +158,8 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("slow") { _: Int -> delay(100) }
 
-        val first = scheduler.start(task, 1)
-        val second = scheduler.start(task, 2)
+        val first = scheduler.launch(task, 1)
+        val second = scheduler.launch(task, 2)
         runCurrent()
         assertEquals(RunState.Running, scheduler.taskJobState.getValue(first.id).runState)
         assertEquals(RunState.Running, scheduler.taskJobState.getValue(second.id).runState)
@@ -181,7 +181,7 @@ class SchedulerTest {
         scheduler.addTaskStateChangeListener(listener)
         val task = scheduler.registerTask("named") { _: Unit -> }
 
-        scheduler.start(task, Unit)
+        scheduler.launch(task, Unit)
         advanceUntilIdle()
 
         val (id, name, error) = uncaught.errors.single()
@@ -195,7 +195,7 @@ class SchedulerTest {
 
     // endregion
 
-    // region startLatest
+    // region launchLatest
 
     @Test
     fun startLatestCancelsPreviousJob() = runTest {
@@ -203,9 +203,9 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("search") { q: String -> delay(1000); q }
 
-        val first = scheduler.start(task, "a")
+        val first = scheduler.launch(task, "a")
         runCurrent()
-        val second = scheduler.startLatest(task, "ab")
+        val second = scheduler.launchLatest(task, "ab")
         advanceUntilIdle()
 
         assertEquals(
@@ -224,7 +224,7 @@ class SchedulerTest {
 
     // endregion
 
-    // region startSuspended
+    // region start
 
     @Test
     fun startSuspendedReturnsFinalState() = runTest {
@@ -233,13 +233,13 @@ class SchedulerTest {
         val boom = IllegalArgumentException("bad")
         val task = scheduler.registerTask("parse") { s: String -> if (s == "bad") throw boom else s.toInt() }
 
-        val ok = scheduler.startSuspended(task, "42", tag = "t")
+        val ok = scheduler.start(task, "42", tag = "t")
         assertEquals(RunState.FinishedSuccess, ok.runState)
         assertEquals(42, ok.result)
         assertEquals("t", ok.tag)
         assertEquals(ok, scheduler.taskJobState[ok.jobId])
 
-        val failed = scheduler.startSuspended(task, "bad")
+        val failed = scheduler.start(task, "bad")
         assertEquals(RunState.FinishedError, failed.runState)
         assertSame(boom, failed.error)
 
@@ -258,7 +258,7 @@ class SchedulerTest {
 
         val caller = launch {
             try {
-                scheduler.startSuspended(task, Unit)
+                scheduler.start(task, Unit)
             } catch (e: CancellationException) {
                 thrown = e
                 throw e
@@ -283,19 +283,19 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("echo") { s: String -> s }
 
-        scheduler.start(task, "a", tag = "t")
-        val r1 = scheduler.restart(task)
+        scheduler.launch(task, "a", tag = "t")
+        val r1 = scheduler.relaunch(task)
         advanceUntilIdle()
         assertEquals("a", scheduler.taskJobState.getValue(r1.id).result)
         assertNull(scheduler.taskJobState.getValue(r1.id).tag)
 
-        scheduler.startLatest(task, "b", tag = "t")
-        val r2 = scheduler.restart(task)
+        scheduler.launchLatest(task, "b", tag = "t")
+        val r2 = scheduler.relaunch(task)
         advanceUntilIdle()
         assertEquals("b", scheduler.taskJobState.getValue(r2.id).argument)
 
-        scheduler.startSuspended(task, "c", tag = "t")
-        val r3 = scheduler.restart(task)
+        scheduler.start(task, "c", tag = "t")
+        val r3 = scheduler.relaunch(task)
         advanceUntilIdle()
         assertEquals("c", scheduler.taskJobState.getValue(r3.id).argument)
         assertNull(scheduler.taskJobState.getValue(r3.id).tag)
@@ -306,9 +306,9 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("echo") { s: String -> s }
 
-        val first = scheduler.start(task, "first")
-        scheduler.start(task, "second")
-        val restarted = scheduler.restart(first)
+        val first = scheduler.launch(task, "first")
+        scheduler.launch(task, "second")
+        val restarted = scheduler.relaunch(first)
         advanceUntilIdle()
 
         assertNotEquals(first.id, restarted.id)
@@ -321,8 +321,8 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("never") { _: String -> }
 
-        assertSame(JobHandle.NIL, scheduler.restart(task))
-        assertSame(JobHandle.NIL, scheduler.restart(JobHandle.NIL))
+        assertSame(JobHandle.NIL, scheduler.relaunch(task))
+        assertSame(JobHandle.NIL, scheduler.relaunch(JobHandle.NIL))
     }
 
     @Test
@@ -330,15 +330,15 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("nullable") { _: String? -> }
 
-        val started = runCatching { scheduler.start(task, null) }
+        val started = runCatching { scheduler.launch(task, null) }
         // quirk: JVM/Android argumentCache is a ConcurrentHashMap, which rejects null values, so start throws NPE.
         // iOS LockedMap accepts null, but restart treats a null argument as "never started" and returns NIL.
         val error = started.exceptionOrNull()
         if (error != null) {
             assertIs<NullPointerException>(error)
         } else {
-            assertSame(JobHandle.NIL, scheduler.restart(task))
-            assertSame(JobHandle.NIL, scheduler.restart(started.getOrThrow()))
+            assertSame(JobHandle.NIL, scheduler.relaunch(task))
+            assertSame(JobHandle.NIL, scheduler.relaunch(started.getOrThrow()))
         }
     }
 
@@ -353,9 +353,9 @@ class SchedulerTest {
         val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
         val other = scheduler.registerTask("other") { _: Int -> delay(1000) }
 
-        val a = scheduler.start(task, 1)
-        val b = scheduler.start(task, 2)
-        val c = scheduler.start(other, 3)
+        val a = scheduler.launch(task, 1)
+        val b = scheduler.launch(task, 2)
+        val c = scheduler.launch(other, 3)
         runCurrent()
         scheduler.cancel(task)
         advanceUntilIdle()
@@ -372,8 +372,8 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
 
-        val a = scheduler.start(task, 1)
-        val b = scheduler.start(task, 2)
+        val a = scheduler.launch(task, 1)
+        val b = scheduler.launch(task, 2)
         runCurrent()
         scheduler.cancel(a)
         advanceUntilIdle()
@@ -387,8 +387,8 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
 
-        val a = scheduler.start(task, 1)
-        val b = scheduler.start(task, 2)
+        val a = scheduler.launch(task, 1)
+        val b = scheduler.launch(task, 2)
         runCurrent()
         scheduler.cancelAndJoin(task)
 
@@ -401,8 +401,8 @@ class SchedulerTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
 
-        val a = scheduler.start(task, 1)
-        val b = scheduler.start(task, 2)
+        val a = scheduler.launch(task, 1)
+        val b = scheduler.launch(task, 2)
         runCurrent()
         scheduler.cancelAndJoin(a)
 
@@ -417,7 +417,7 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("slow") { _: Int -> delay(1000) }
 
-        val job = scheduler.start(task, 1)
+        val job = scheduler.launch(task, 1)
         runCurrent()
         parent.cancel()
         advanceUntilIdle()
@@ -436,10 +436,10 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("t") { _: Int -> }
 
-        scheduler.start(task, 1)
+        scheduler.launch(task, 1)
         advanceUntilIdle()
         scheduler.removeTaskStateChangeListener(listener)
-        scheduler.start(task, 2)
+        scheduler.launch(task, 2)
         advanceUntilIdle()
 
         assertEquals(listOf(1, 1), listener.states.map { it.argument })
@@ -463,7 +463,7 @@ class SchedulerTest {
         scheduler.addTaskStateChangeListener(bystander)
         val task = scheduler.registerTask("t") { _: Int -> }
 
-        scheduler.start(task, 1)
+        scheduler.launch(task, 1)
         advanceUntilIdle()
 
         assertEquals(1, selfRemoving.calls)
@@ -489,7 +489,7 @@ class SchedulerTest {
             }
         }
 
-        val job = scheduler.start(task, 1)
+        val job = scheduler.launch(task, 1)
         val ticker = launchTicker()
         runCurrent()
         assertTrue(scheduler.isRunning(task))
@@ -503,7 +503,7 @@ class SchedulerTest {
         assertEquals(listOf(job.id), listener.cancelled.map { it.jobId })
 
         // the scheduler is still usable: tasks start and coroutines launch again
-        scheduler.start(task, 2)
+        scheduler.launch(task, 2)
         launchTicker()
         advanceTimeBy(1_050)
         runCurrent()
@@ -513,21 +513,21 @@ class SchedulerTest {
     }
 
     // endregion
-    // region startIfIdle, startSuspendedIfIdle, bindTo, results
+    // region launchIfIdle, startIfIdle, bindTo, results
 
     @Test
     fun startIfIdleDropsStartWhileRunning() = runTest {
         val scheduler = testScheduler()
         val task = scheduler.registerTask("t") { _: Int -> delay(100) }
 
-        val first = scheduler.startIfIdle(task, 1)
-        val second = scheduler.startIfIdle(task, 2)
+        val first = scheduler.launchIfIdle(task, 1)
+        val second = scheduler.launchIfIdle(task, 2)
         runCurrent()
 
         assertTrue(first != null)
         assertNull(second)
         advanceUntilIdle()
-        assertTrue(scheduler.startIfIdle(task, 3) != null)
+        assertTrue(scheduler.launchIfIdle(task, 3) != null)
     }
 
     @Test
@@ -536,7 +536,7 @@ class SchedulerTest {
         val listener = RecordingListener().also(scheduler::addTaskStateChangeListener)
         val task = scheduler.registerTask("t") { _: Unit -> }
 
-        scheduler.startIfIdle(task)
+        scheduler.launchIfIdle(task)
         advanceUntilIdle()
 
         assertEquals(Unit, listener.states.last().argument)
@@ -550,7 +550,7 @@ class SchedulerTest {
         val task = scheduler.registerTask("t") { _: Int -> gate.await() }
 
         val started = withContext(Dispatchers.Default) {
-            (1..200).map { async { scheduler.startIfIdle(task, it) } }.awaitAll()
+            (1..200).map { async { scheduler.launchIfIdle(task, it) } }.awaitAll()
         }
 
         assertEquals(1, started.count { it != null })
@@ -564,13 +564,13 @@ class SchedulerTest {
         val task = scheduler.registerTask("t") { x: Int -> x * 2 }
         val slow = scheduler.registerTask("slow") { _: Int -> delay(100) }
 
-        val state = scheduler.startSuspendedIfIdle(task, 21)
+        val state = scheduler.startIfIdle(task, 21)
         assertEquals(RunState.FinishedSuccess, state?.runState)
         assertEquals(42, state?.resultOf(task))
 
-        scheduler.start(slow, 1)
+        scheduler.launch(slow, 1)
         runCurrent()
-        assertNull(scheduler.startSuspendedIfIdle(slow, 2))
+        assertNull(scheduler.startIfIdle(slow, 2))
     }
 
     @Test
@@ -580,7 +580,7 @@ class SchedulerTest {
         val bound = Job()
         scheduler.bindTo(CoroutineScope(bound))
 
-        val job = scheduler.start(task, 1)
+        val job = scheduler.launch(task, 1)
         runCurrent()
         assertTrue(scheduler.isRunning(task))
 
@@ -589,7 +589,7 @@ class SchedulerTest {
 
         assertTrue(job.job.isCancelled)
         assertTrue(!scheduler.isRunning(task))
-        assertTrue(scheduler.startIfIdle(task, 2) != null)
+        assertTrue(scheduler.launchIfIdle(task, 2) != null)
     }
 
     @Test
@@ -598,8 +598,8 @@ class SchedulerTest {
         val boom = IllegalStateException("boom")
         val task = scheduler.registerTask("t") { x: Int -> if (x < 0) throw boom else x }
 
-        scheduler.startSuspended(task, 1)
-        scheduler.startSuspended(task, -1)
+        scheduler.start(task, 1)
+        scheduler.start(task, -1)
 
         // replayLast is true by default: only the most recent finished job is replayed
         val replayed = scheduler.results(task).first()
@@ -608,7 +608,7 @@ class SchedulerTest {
         val live = mutableListOf<Result<Int>>()
         val collector = launch { scheduler.results(task, replayLast = false).toList(live) }
         runCurrent()
-        scheduler.startSuspended(task, 7)
+        scheduler.start(task, 7)
         runCurrent()
         collector.cancel()
 
