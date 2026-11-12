@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -165,8 +166,9 @@ class SchedulerTest {
         assertEquals(RunState.Running, scheduler.taskJobState.getValue(second.id).runState)
 
         advanceUntilIdle()
-        assertEquals(RunState.FinishedSuccess, scheduler.taskJobState.getValue(first.id).runState)
-        assertEquals(RunState.FinishedSuccess, scheduler.taskJobState.getValue(second.id).runState)
+        // only the last finished job of a task is kept in taskJobState
+        assertEquals(1, scheduler.taskJobState.size)
+        assertEquals(RunState.FinishedSuccess, scheduler.taskJobState.values.single().runState)
     }
 
     @Test
@@ -218,8 +220,9 @@ class SchedulerTest {
             listener.events,
         )
         assertTrue(first.job.isCancelled)
-        // quirk: a cancelled job's state stays Running forever
-        assertEquals(RunState.Running, scheduler.taskJobState.getValue(first.id).runState)
+        // state of a cancelled job is removed, only the last finished job is kept
+        assertNull(scheduler.taskJobState[first.id])
+        assertEquals(RunState.FinishedSuccess, scheduler.taskJobState.getValue(second.id).runState)
     }
 
     // endregion
@@ -326,20 +329,54 @@ class SchedulerTest {
     }
 
     @Test
-    fun restartAfterNullArgument() = runTest {
+    fun nullArgumentWorksEverywhere() = runTest {
         val scheduler = testScheduler()
-        val task = scheduler.registerTask("nullable") { _: String? -> }
+        val seen = mutableListOf<String?>()
+        val task = scheduler.registerTask("nullable") { a: String? -> seen += a; a }
 
-        val started = runCatching { scheduler.launch(task, null) }
-        // quirk: JVM/Android argumentCache is a ConcurrentHashMap, which rejects null values, so start throws NPE.
-        // iOS LockedMap accepts null, but restart treats a null argument as "never started" and returns NIL.
-        val error = started.exceptionOrNull()
-        if (error != null) {
-            assertIs<NullPointerException>(error)
-        } else {
-            assertSame(JobHandle.NIL, scheduler.relaunch(task))
-            assertSame(JobHandle.NIL, scheduler.relaunch(started.getOrThrow()))
-        }
+        scheduler.launch(task, null)
+        scheduler.launchLatest(task, null)
+        assertNull(scheduler.launchIfIdle(task, null)) // dropped, two jobs running
+        advanceUntilIdle()
+        assertNotNull(scheduler.launchIfIdle(task, null))
+        advanceUntilIdle()
+        assertNull(scheduler.start(task, null).argument)
+        assertNull(scheduler.startIfIdle(task, null)?.argument)
+        assertEquals(5, seen.size)
+        assertTrue(seen.all { it == null })
+    }
+
+    @Test
+    fun relaunchReRunsWithNullArgument() = runTest {
+        val scheduler = testScheduler()
+        var runs = 0
+        val task = scheduler.registerTask("nullable") { _: String? -> runs++ }
+
+        val first = scheduler.launch(task, null)
+        val byTask = scheduler.relaunch(task)
+        val byJob = scheduler.relaunch(first)
+        advanceUntilIdle()
+
+        assertNotEquals(JobHandle.NIL, byTask)
+        assertNotEquals(JobHandle.NIL, byJob)
+        assertEquals(3, runs)
+    }
+
+    @Test
+    fun launchDoesNotRetainOldStatesOrArguments() = runTest {
+        val scheduler = testScheduler()
+        val task = scheduler.registerTask("echo") { s: String -> s }
+
+        val handles = (1..50).map { scheduler.launch(task, "arg$it") }
+        advanceUntilIdle()
+
+        assertEquals(1, scheduler.taskJobState.size)
+        assertEquals(1, scheduler.finishedTaskState.size)
+        assertEquals(scheduler.finishedTaskState.getValue(task.id).jobId, scheduler.taskJobState.keys.single())
+        // the argument lives only in the handle, relaunch by an old handle still works
+        val again = scheduler.relaunch(handles.first())
+        advanceUntilIdle()
+        assertEquals("arg1", scheduler.taskJobState.getValue(again.id).result)
     }
 
     // endregion

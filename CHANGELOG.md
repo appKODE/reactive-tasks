@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1 - 2026-11-12
+
+### Fixed
+
+- `launch`, `launchLatest`, `launchIfIdle`, `start`, `startIfIdle` threw `NullPointerException` on JVM/Android when
+  the argument was `null`. A `null` argument now works everywhere, and `relaunch` re-runs a job with a `null` argument
+  instead of returning `JobHandle.NIL`.
+- Memory leak: a scheduler kept the argument and the state of every job ever started. The argument is now stored in
+  the `JobHandle`, and `Scheduler.taskJobState` keeps only the last finished job of each task (plus jobs which are
+  still running). States of older finished jobs and of cancelled jobs are removed. Read finished states with
+  `finishedStates` / `results` instead of looking up old job ids in `taskJobState`.
+- A job could get dropped and `start` could hang forever when an observer of the task (`results`, `finishedStates`,
+  ...) started the next job from inside its collector. State updates to observers no longer suspend the job which
+  publishes them.
+
 ## 2.0.0 - 2026-11-12
 
 ### Changed (breaking)

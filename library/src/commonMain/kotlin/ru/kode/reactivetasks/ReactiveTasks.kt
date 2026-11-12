@@ -61,6 +61,7 @@ class JobHandle(
     val taskHandle: TaskHandle<Any?, Any?>,
     val id: Uuid,
     internal val job: Job,
+    internal val argument: Any? = null,
 ) {
     companion object {
         /**
@@ -200,17 +201,17 @@ class Scheduler(
         e.printStackTrace()
     }
 ) {
-    // TODO use configurable entry count?
     /**
-     * A map from either JobHandle.id or TaskHandle.id to an argument object.
+     * A map from TaskHandle.id to a single-element list holding the most recent argument (a list, because
+     * concurrent maps do not accept null values and null is a valid argument).
      */
-    private val argumentCache: MutableMap<Uuid, Any?> = createConcurrentMutableMap()
+    private val lastArgument: MutableMap<Uuid, List<Any?>> = createConcurrentMutableMap()
 
-    // TODO evict states after some time/entry-count?
     private val _taskJobState: MutableMap<Uuid, JobState> = createConcurrentMutableMap()
 
     /**
-     * A map of jobId to task job states
+     * A map of jobId to task job states. Only the last finished job of each task is kept, plus jobs which are still
+     * running. States of older finished jobs and of cancelled jobs are removed.
      */
     val taskJobState: Map<Uuid, JobState> = _taskJobState
 
@@ -320,8 +321,7 @@ class Scheduler(
      */
     suspend fun <A, R> start(handle: TaskHandle<A, R>, argument: A, tag: Any? = null): JobState {
         val jobId = Uuid.random()
-        argumentCache.put(jobId, argument as Any?)
-        argumentCache.put(handle.id, argument as Any?)
+        lastArgument[handle.id] = listOf(argument)
         return executeWrappedBody(handle, jobId, argument, tag)
     }
 
@@ -374,8 +374,7 @@ class Scheduler(
 
     private fun <A> startInternal(handle: TaskHandle<A, *>, argument: A, tag: Any?, cancelPrevious: Boolean): JobHandle {
         val jobId = Uuid.random()
-        argumentCache.put(jobId, argument as Any?)
-        argumentCache.put(handle.id, argument as Any?)
+        lastArgument[handle.id] = listOf(argument)
         // NOTE @dz there can be a race if children will change between we get them here and
         // before new job gets scheduled
         val previousJobs = handle.scope.coroutineContext.job.children.toList()
@@ -401,6 +400,7 @@ class Scheduler(
             handle as TaskHandle<Any?, Any?>,
             jobId,
             job,
+            argument,
         )
     }
 
@@ -410,7 +410,8 @@ class Scheduler(
             if (state.runState == RunState.Running) {
                 runningTaskState[handle.id] = state
             } else {
-                finishedTaskState[handle.id] = state
+                // only the last finished job of a task is kept
+                finishedTaskState.put(handle.id, state)?.let { if (it.jobId != jobId) _taskJobState.remove(it.jobId) }
                 forgetRunning(handle.id, jobId)
             }
             stateChangeListeners.forEach { it.onJobStateChanged(state) }
@@ -427,6 +428,7 @@ class Scheduler(
             }
         } catch (e: CancellationException) {
             forgetRunning(handle.id, jobId)
+            _taskJobState.remove(jobId)
             throw e
         }
     }
@@ -449,13 +451,9 @@ class Scheduler(
      * Note that there is an overload which accepts [JobHandle] instead and it will use the argument from the particular job start.
      */
     fun <A, R> relaunch(handle: TaskHandle<A, R>): JobHandle {
+        val last = lastArgument[handle.id] ?: return JobHandle.NIL
         @Suppress("UNCHECKED_CAST")
-        val arg = argumentCache[handle.id] as? A?
-        return if (arg != null) {
-            launch(handle, arg)
-        } else {
-            JobHandle.NIL
-        }
+        return launch(handle, last[0] as A)
     }
 
     /**
@@ -464,12 +462,8 @@ class Scheduler(
      * Note that there is an overload which accepts [TaskHandle] instead and it will use the argument from the most recent task start.
      */
     fun relaunch(handle: JobHandle): JobHandle {
-        val arg = argumentCache[handle.id]
-        return if (arg != null) {
-            launch(handle.taskHandle, arg)
-        } else {
-            JobHandle.NIL
-        }
+        if (handle.id == Uuid.NIL) return JobHandle.NIL
+        return launch(handle.taskHandle, handle.argument)
     }
 
     /**
@@ -653,7 +647,8 @@ private fun Scheduler.stateChanges(
     return callbackFlow {
         val listener = object : TaskStateChangeListener {
             override suspend fun onJobStateChanged(state: JobState) {
-                if (state.taskId == handle.id) send(state)
+                // never suspends and never throws into the job which publishes the state
+                if (state.taskId == handle.id) trySend(state)
             }
 
             override fun onJobCancelled(taskId: Uuid, jobId: Uuid) {
@@ -672,5 +667,5 @@ private fun Scheduler.stateChanges(
         }
         replayed?.let { listener.onJobStateChanged(it) }
         awaitClose { this@stateChanges.removeTaskStateChangeListener(listener) }
-    }
+    }.buffer(Channel.UNLIMITED)
 }

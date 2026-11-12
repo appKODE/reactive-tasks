@@ -8,6 +8,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -365,5 +366,30 @@ class ObserveStateChangesTest {
         advanceUntilIdle()
 
         assertEquals(listOf(false, true, false), running)
+    }
+
+    @Test
+    fun observerStartingNextJobOnResultDoesNotDropJobs() = runTest {
+        val scheduler = testScheduler()
+        val ran = mutableListOf<Int>()
+        val task = scheduler.registerTask("chain") { n: Int -> ran += n; n }
+        // observer A, subscribed first
+        val a = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            scheduler.results(task, replayLast = false).first()
+        }
+        // observer B starts the next job when the first result arrives and waits for it
+        var second: JobState? = null
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            scheduler.results(task, replayLast = false).first()
+            second = scheduler.start(task, 2)
+        }
+        runCurrent()
+
+        scheduler.launch(task, 1)
+        advanceUntilIdle()
+
+        assertTrue(a.isCompleted)
+        assertEquals(listOf(1, 2), ran)
+        assertEquals(RunState.FinishedSuccess, second?.runState)
     }
 }
