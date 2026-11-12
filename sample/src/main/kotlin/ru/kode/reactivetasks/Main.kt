@@ -39,7 +39,7 @@ fun testBasicStart(scheduler: Scheduler) {
                 if (state.runState == RunState.FinishedError || state.runState == RunState.FinishedSuccess) {
                     latch.countDown()
                     if (state.argument == "user-id-2200") {
-                        scheduler.restart(fetchHandle)
+                        scheduler.relaunch(fetchHandle)
                     }
                 }
             }
@@ -51,13 +51,13 @@ fun testBasicStart(scheduler: Scheduler) {
         }
     })
 
-    scheduler.start(fetchHandle, "user-id-100", "my tag")
-    scheduler.start(fetchHandle, "user-id-2200")
-    scheduler.start(fetchHandle, "user-id-500")
+    scheduler.launch(fetchHandle, "user-id-100", "my tag")
+    scheduler.launch(fetchHandle, "user-id-2200")
+    scheduler.launch(fetchHandle, "user-id-500")
 
     val scope = CoroutineScope(Dispatchers.IO)
     scope.launch {
-        val result = scheduler.startSuspended(fetchHandle, "user-id-800")
+        val result = scheduler.start(fetchHandle, "user-id-800")
         println("received suspended result $result")
         latch.countDown()
     }
@@ -99,10 +99,10 @@ fun testStartLatest(scheduler: Scheduler) {
             if (i != 0) {
                 delay(30)
             }
-            scheduler.startLatest(queryHandle, "query$i")
+            scheduler.launchLatest(queryHandle, "query$i")
         }
         delay(300)
-        scheduler.startLatest(queryHandle, "final-query")
+        scheduler.launchLatest(queryHandle, "final-query")
     }
     latch.await()
 }
@@ -121,7 +121,7 @@ fun testFlowAdapters(scheduler: Scheduler, observeScope: CoroutineScope) {
             .shareIn(observeScope, SharingStarted.Lazily)
             .onSubscription {
                 println("Subscribed!")
-                scheduler.start(handle, "300")
+                scheduler.launch(handle, "300")
             }
             .collect {
                 println("Received state $it")

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.0 - 2026-11-12
+
+### Changed (breaking)
+
+Suspending functions get the short names, non-suspending ones that return a handle are named `launch`, like
+`CoroutineScope.launch`.
+
+| 1.x | 2.0.0 |
+|---|---|
+| `start(handle, argument, tag)`: `JobHandle` | `launch(handle, argument, tag)` |
+| `startLatest(handle, argument, tag)` | `launchLatest(handle, argument, tag)` |
+| `startIfIdle(handle, argument, tag)`: `JobHandle?` | `launchIfIdle(handle, argument, tag)` |
+| `restart(handle)` | `relaunch(handle)` |
+| `startSuspended(handle, argument, tag)`: `JobState` | `start(handle, argument, tag)` |
+| `startSuspendedIfIdle(handle, argument, tag)`: `JobState?` | `startIfIdle(handle, argument, tag)` |
+
+Migrate in two passes: first rename `start`, `startLatest`, `startIfIdle` and `restart` to the `launch` names, then
+`startSuspended*` to `start*`. In the other order, a `start` call inside a coroutine still compiles and starts
+waiting for the job.
+
 ## 1.4.0 - 2026-11-11
 
 ### Added
